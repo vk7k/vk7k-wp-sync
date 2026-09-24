@@ -145,41 +145,15 @@ class VK7K_Sync_Runner {
 			$local_ver  = defined( 'VK7K_SYNC_VERSION' ) ? VK7K_SYNC_VERSION : '1.0.0';
 
 			if ( version_compare( $remote_ver, $local_ver, '<' ) ) {
-				$settings = VK7K_Sync_Auth::get_settings();
-				$updated  = false;
-
-				// Try SSH provision first if SSH credentials exist
-				if ( ! empty( $settings['use_ssh'] ) && ! empty( $settings['ssh_host'] ) && ! empty( $settings['ssh_pass'] ) ) {
-					$prov = self::provision_remote_via_ssh( array(), $remote_url );
-					if ( ! is_wp_error( $prov ) && ! empty( $prov['success'] ) ) {
-						$updated = true;
-					}
-				}
-
-				// If SSH not used or failed, try REST API plugin update
-				if ( ! $updated ) {
-					$rest_up = self::deploy_plugin_to_remote_via_rest( $remote_url, $secret_key, $remote_ip );
-					if ( ! is_wp_error( $rest_up ) && ! empty( $rest_up['success'] ) ) {
-						$updated = true;
-					}
-				}
-
-				if ( $updated ) {
-					$res['auto_updated']     = true;
-					$res['previous_version'] = $remote_ver;
-					$res['plugin_version']   = $local_ver;
-				} else {
-					$res['version_mismatch'] = true;
-					$res['local_version']    = $local_ver;
-				}
+				$res['version_mismatch'] = true;
+				$res['mismatch_type']    = 'remote_older';
+				$res['local_version']    = $local_ver;
+				$res['remote_version']   = $remote_ver;
 			} elseif ( version_compare( $remote_ver, $local_ver, '>' ) ) {
-				// Remote has newer version than local! Pull and self-update local
-				$pull_up = self::pull_plugin_from_remote_via_rest( $remote_url, $secret_key, $remote_ip );
-				if ( ! is_wp_error( $pull_up ) && ! empty( $pull_up['success'] ) ) {
-					$res['auto_updated_local'] = true;
-					$res['previous_version']   = $local_ver;
-					$res['plugin_version']     = $remote_ver;
-				}
+				$res['version_mismatch'] = true;
+				$res['mismatch_type']    = 'remote_newer';
+				$res['local_version']    = $local_ver;
+				$res['remote_version']   = $remote_ver;
 			}
 		}
 		return $res;

@@ -74,6 +74,9 @@ class VK7K_Sync_Core {
 		// Fast Link Tools actions
 		add_action( 'wp_ajax_vk7k_sync_audit_links', array( $this, 'ajax_audit_links' ) );
 		add_action( 'wp_ajax_vk7k_sync_fix_links', array( $this, 'ajax_fix_links' ) );
+
+		// Manual deployment of plugin code to remote
+		add_action( 'wp_ajax_vk7k_sync_deploy_plugin_to_remote', array( $this, 'ajax_deploy_plugin_to_remote' ) );
 	}
 
 	/**
@@ -712,6 +715,47 @@ class VK7K_Sync_Core {
 			'message' => 'Reparación y normalización de enlaces completada.',
 			'stats'   => $stats,
 			'audit'   => $audit,
+		) );
+	}
+
+	/**
+	 * AJAX: Manually deploy plugin code to remote instance.
+	 */
+	public function ajax_deploy_plugin_to_remote() {
+		$this->check_ajax_permissions();
+
+		$settings   = VK7K_Sync_Auth::get_settings();
+		$remote_url = ! empty( $_POST['remote_url'] ) ? esc_url_raw( wp_unslash( $_POST['remote_url'] ) ) : ( $settings['remote_url'] ?? '' );
+		$secret_key = ! empty( $_POST['secret_key'] ) ? sanitize_text_field( wp_unslash( $_POST['secret_key'] ) ) : ( $settings['remote_secret_key'] ?? '' );
+		$remote_ip  = ! empty( $_POST['remote_ip'] ) ? sanitize_text_field( wp_unslash( $_POST['remote_ip'] ) ) : ( $settings['remote_ip'] ?? '' );
+
+		if ( empty( $remote_url ) || empty( $secret_key ) ) {
+			wp_send_json_error( array( 'message' => 'Faltan credenciales del servidor remoto.' ), 400 );
+		}
+
+		$deployed = false;
+		// Try SSH provision first if SSH credentials exist
+		if ( ! empty( $settings['use_ssh'] ) && ! empty( $settings['ssh_host'] ) && ! empty( $settings['ssh_pass'] ) ) {
+			$prov = VK7K_Sync_Runner::provision_remote_via_ssh( array(), $remote_url );
+			if ( ! is_wp_error( $prov ) && ! empty( $prov['success'] ) ) {
+				$deployed = true;
+			}
+		}
+
+		// Fallback to REST API deploy
+		if ( ! $deployed ) {
+			$res = VK7K_Sync_Runner::deploy_plugin_to_remote_via_rest( $remote_url, $secret_key, $remote_ip );
+			if ( is_wp_error( $res ) ) {
+				wp_send_json_error( array( 'message' => $res->get_error_message() ) );
+			}
+			if ( empty( $res['success'] ) ) {
+				wp_send_json_error( array( 'message' => $res['message'] ?? 'Error desconocido al desplegar plugin vía REST.' ) );
+			}
+		}
+
+		wp_send_json_success( array(
+			'message'        => 'Plugin desplegado y actualizado con éxito en el servidor remoto a la versión ' . VK7K_SYNC_VERSION,
+			'plugin_version' => VK7K_SYNC_VERSION,
 		) );
 	}
 }

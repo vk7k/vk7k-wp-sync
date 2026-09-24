@@ -68,3 +68,19 @@ Todos los endpoints se encuentran protegidos bajo el namespace `vk7k-sync/v1/`:
 | `/files/upload-chunk`| POST | Recibe y extrae un paquete ZIP de archivos |
 | `/files/download-chunk`| POST | Empaqueta y descarga un lote ZIP de archivos |
 | `/finalize` | POST | Regenera reglas de reescritura, permalinks y purga caché |
+
+---
+
+## 📦 Sistema de Actualizaciones (GitHub Releases)
+
+A partir de la versión **1.3.0**, VK7K WP Sync incorpora un canal formal de distribución mediante **GitHub Releases**:
+
+1. **Actualizaciones Oficiales en WordPress**:
+   - Cada sitio conectado comprueba periódicamente nuevas versiones en [github.com/vk7k/vk7k-wp-sync](https://github.com/vk7k/vk7k-wp-sync).
+   - Cuando se publica una nueva release oficial (ej. `v1.3.0`), WordPress notifica en la lista de plugins la disponibilidad de la actualización con botón **"Actualizar ahora"** y visor de notas de versión.
+   - Enlace directo **"Buscar actualizaciones"** en la fila del plugin para forzar la comprobación en cualquier momento.
+
+2. **Despliegue Manual bajo demanda**:
+   - El handshake de conexión (`auth/test`) ya no sobreescribe código de forma silenciosa ni agresiva entre instancias.
+   - Si se detecta una discrepancia de versión entre el sitio local y el remoto, el panel notifica la diferencia y ofrece un botón explícito: **"Desplegar vX.X.X local al remoto"** para sincronizar código únicamente cuando el administrador lo autorice.
+

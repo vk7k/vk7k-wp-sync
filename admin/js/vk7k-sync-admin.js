@@ -281,10 +281,11 @@
 				const wpVer = res.data.wp_version ? ` (WP v${res.data.wp_version})` : '';
 				const pluginVer = res.data.plugin_version ? ` • Plugin v${res.data.plugin_version}` : '';
 
-				if (res.data.auto_updated) {
-					showConnectionAlert('success', `<strong>⚡ Servidor Remoto Actualizado:</strong> ${siteName} sincronizado automáticamente a Plugin v${res.data.plugin_version}. Conexión lista.`);
-				} else if (res.data.version_mismatch) {
-					showConnectionAlert('warning', `<strong>⚠️ Versión Desactualizada:</strong> ${siteName} tiene Plugin v${res.data.plugin_version} (Local: v${res.data.local_version}). Ejecuta <em>"Probar y Auto-Emparejar"</em> para actualizarlo.`);
+				if (res.data.version_mismatch) {
+					const rVer = res.data.remote_version || res.data.plugin_version;
+					const lVer = res.data.local_version || '1.3.0';
+					const deployBtn = `<button type="button" class="button button-small vk7k-manual-deploy-btn" style="margin-left:8px;"><span class="dashicons dashicons-upload" style="vertical-align:middle;font-size:15px;width:15px;height:15px;"></span> Desplegar v${lVer} local al remoto</button>`;
+					showConnectionAlert('warning', `<strong>⚠️ Discrepancia de versiones:</strong> ${siteName} tiene Plugin v${rVer} (Local: v${lVer}). Se recomienda actualizar vía GitHub Releases o ${deployBtn}`);
 				} else {
 					showConnectionAlert('success', `<strong>✓ Conexión establecida:</strong> ${siteName}${wpVer}${pluginVer} está listo para sincronizar.`);
 				}
@@ -655,10 +656,11 @@
 				const wpVer     = testRes.data.wp_version ? ` (WP v${testRes.data.wp_version})` : '';
 				const pluginVer = testRes.data.plugin_version ? ` • Plugin v${testRes.data.plugin_version}` : '';
 
-				if (testRes.data.auto_updated) {
-					showConnectionAlert('success', `<strong>⚡ Servidor Remoto Actualizado y Aprovisionado:</strong> ${siteName} sincronizado y actualizado automáticamente a Plugin v${testRes.data.plugin_version}.`);
-				} else if (testRes.data.auto_updated_local) {
-					showConnectionAlert('success', `<strong>⚡ Servidor Local Actualizado:</strong> Este sitio local se actualizó automáticamente desde ${siteName} a Plugin v${testRes.data.plugin_version}.`);
+				if (testRes.data.version_mismatch) {
+					const rVer = testRes.data.remote_version || testRes.data.plugin_version;
+					const lVer = testRes.data.local_version || '1.3.0';
+					const deployBtn = `<button type="button" class="button button-small vk7k-manual-deploy-btn" style="margin-left:8px;"><span class="dashicons dashicons-upload" style="vertical-align:middle;font-size:15px;width:15px;height:15px;"></span> Desplegar v${lVer} local al remoto</button>`;
+					showConnectionAlert('warning', `<strong>⚠️ Conexión establecida con discrepancia de versión:</strong> ${siteName}${wpVer} tiene Plugin v${rVer} (Local: v${lVer}). ${deployBtn}`);
 				} else {
 					showConnectionAlert('success', `<strong>✓ Conexión y Auto-Emparejamiento Exitoso:</strong> Conectado con ${siteName}${wpVer}${pluginVer}. Entorno listo.`);
 				}
@@ -709,6 +711,34 @@
 				initialCheckTimer = null;
 			}
 			runTestConnectionFlow(false);
+		});
+
+		$(document).on('click', '.vk7k-manual-deploy-btn', async function(e) {
+			e.preventDefault();
+			const $dBtn = $(this);
+			$dBtn.prop('disabled', true).html('<span class="dashicons dashicons-update vk7k-spin"></span> Desplegando...');
+			try {
+				const depRes = await $.ajax({
+					url: vk7kSyncData.ajaxUrl,
+					type: 'POST',
+					data: {
+						action: 'vk7k_sync_deploy_plugin_to_remote',
+						nonce: vk7kSyncData.nonce,
+						remote_url: $('#vk7k-remote-url').val().trim(),
+						secret_key: $('#vk7k-remote-key').val().trim(),
+						remote_ip: $('#vk7k-remote-ip').val().trim()
+					}
+				});
+				if (depRes.success) {
+					showConnectionAlert('success', `<strong>✓ Despliegue Exitoso:</strong> ${depRes.data.message}`);
+				} else {
+					showConnectionAlert('error', `<strong>⚠️ Error al desplegar:</strong> ${getErrorMessage(depRes)}`);
+					$dBtn.prop('disabled', false).html('<span class="dashicons dashicons-upload"></span> Reintentar despliegue');
+				}
+			} catch (dErr) {
+				showConnectionAlert('error', `<strong>⚠️ Error en petición:</strong> ${getErrorMessage(dErr)}`);
+				$dBtn.prop('disabled', false).html('<span class="dashicons dashicons-upload"></span> Reintentar despliegue');
+			}
 		});
 	}
 
