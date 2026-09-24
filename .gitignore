@@ -1,0 +1,21 @@
+# Security & credentials
+.vk7k_sync_vault.json
+*.key
+*.pem
+
+# OS & editor artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Temporary & build files
+temp/
+logs/
+*.log
+*.zip
+*.tar.gz
+node_modules/
+vendor/
