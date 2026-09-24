@@ -1379,8 +1379,11 @@ class VK7K_Sync_Runner {
 				}
 			}
 
-			// Flush object cache and rewrite rules
+			// Flush object cache, OPcache, and rewrite rules
 			wp_cache_flush();
+			if ( function_exists( 'opcache_reset' ) ) {
+				@opcache_reset();
+			}
 			flush_rewrite_rules( true );
 			VK7K_Sync_Files::cleanup_temp();
 

@@ -715,6 +715,10 @@ class VK7K_Sync_Files {
 		$zip->close();
 		@unlink( $zip_path );
 
+		if ( function_exists( 'opcache_reset' ) ) {
+			@opcache_reset();
+		}
+
 		return array(
 			'success'   => true,
 			'extracted' => $extracted_count,

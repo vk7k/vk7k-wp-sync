@@ -491,15 +491,18 @@ class VK7K_Sync_Admin {
 										</h4>
 										<div class="vk7k-db-subgroup-options">
 											<label class="vk7k-sub-check">
-												<input type="checkbox" id="vk7k-opt-sync-wc-orders" checked />
+												<input type="checkbox" id="vk7k-opt-sync-wc-orders" />
 												<span>
 													<strong><?php esc_html_e( 'Pedidos y Ventas (wp_wc_orders, items, cupones)', 'vk7k-wp-sync' ); ?></strong>
-													<em class="vk7k-tag-subnote"><?php esc_html_e( '(Desmarcar al subir PUSH a producción para no sobreescribir ventas)', 'vk7k-wp-sync' ); ?></em>
+													<em class="vk7k-tag-subnote"><?php esc_html_e( '(Desmarcado por defecto para no alterar ventas)', 'vk7k-wp-sync' ); ?></em>
 												</span>
 											</label>
 											<label class="vk7k-sub-check">
-												<input type="checkbox" id="vk7k-opt-sync-users" checked />
-												<span><?php esc_html_e( 'Cuentas de Usuarios y Clientes (wp_users, usermeta)', 'vk7k-wp-sync' ); ?></span>
+												<input type="checkbox" id="vk7k-opt-sync-users" />
+												<span>
+													<strong><?php esc_html_e( 'Cuentas de Usuarios y Clientes (wp_users, usermeta)', 'vk7k-wp-sync' ); ?></strong>
+													<em class="vk7k-tag-subnote"><?php esc_html_e( '(Desmarcado por seguridad: preserva administradores y sesiones locales)', 'vk7k-wp-sync' ); ?></em>
+												</span>
 											</label>
 										</div>
 									</div>

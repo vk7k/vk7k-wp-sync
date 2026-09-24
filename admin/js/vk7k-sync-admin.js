@@ -799,6 +799,17 @@
 			e.preventDefault();
 			$('.vk7k-sync-type-card[data-type="custom_advanced"]').trigger('click');
 		});
+
+		$('#vk7k-opt-sync-users').on('change', function() {
+			if ($(this).is(':checked')) {
+				showConnectionAlert('info', 'ℹ️ Has seleccionado sincronizar usuarios y clientes. Los administradores locales y sus sesiones activas serán resguardados automáticamente.');
+			}
+		});
+
+		// Trigger safe default preset on load if none selected
+		if (!$('.vk7k-sync-type-card.is-selected').length) {
+			$('.vk7k-sync-type-card[data-type="woocommerce_catalog"]').trigger('click');
+		}
 	}
 
 	function initAccordionAndSelectors() {

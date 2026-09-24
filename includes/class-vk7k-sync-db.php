@@ -13,91 +13,272 @@ if ( ! defined( 'ABSPATH' ) ) {
 class VK7K_Sync_DB {
 
 	/**
-	 * Temporary memory buffer to preserve local destination options across table drop.
+	 * Get persistent storage directory for sync temp data.
 	 *
-	 * @var array
+	 * @return string
 	 */
-	private static $preserved_options = array();
-
-	/**
-	 * Temporary memory buffer to preserve local admin user and session tokens.
-	 *
-	 * @var array
-	 */
-	private static $preserved_user = array();
-
-	/**
-	 * Backup current local logged-in administrator and session tokens.
-	 */
-	public static function backup_current_admin_user() {
-		global $wpdb;
-
-		$current_user = wp_get_current_user();
-		if ( empty( $current_user ) || empty( $current_user->ID ) ) {
-			$admin_id = (int) $wpdb->get_var( "SELECT u.ID FROM {$wpdb->users} u INNER JOIN {$wpdb->usermeta} m ON u.ID = m.user_id WHERE m.meta_key = '{$wpdb->prefix}capabilities' AND m.meta_value LIKE '%administrator%' LIMIT 1" );
-			if ( ! empty( $admin_id ) ) {
-				$current_user = get_userdata( $admin_id );
-			}
+	public static function get_temp_storage_dir() {
+		$upload_dir = wp_upload_dir();
+		$dir = trailingslashit( $upload_dir['basedir'] ) . 'vk7k-sync-temp';
+		if ( ! file_exists( $dir ) ) {
+			wp_mkdir_p( $dir );
+			@file_put_contents( $dir . '/index.php', '<?php // Silence is golden' );
 		}
-
-		if ( empty( $current_user ) || empty( $current_user->ID ) ) {
-			return false;
-		}
-
-		$user_row = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$wpdb->users} WHERE ID = %d", $current_user->ID ), ARRAY_A );
-		$usermeta_rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$wpdb->usermeta} WHERE user_id = %d", $current_user->ID ), ARRAY_A );
-
-		self::$preserved_user = array(
-			'user'     => $user_row,
-			'usermeta' => $usermeta_rows,
-			'user_id'  => $current_user->ID,
-		);
-
-		return true;
+		return $dir;
 	}
 
 	/**
-	 * Re-inject / merge preserved local administrator into users and usermeta tables.
+	 * Backup all local administrators and their session tokens to persistent file storage.
+	 *
+	 * @return bool
 	 */
-	public static function restore_current_admin_user( $table_prefix = '' ) {
+	public static function backup_admin_users() {
 		global $wpdb;
 
-		if ( empty( self::$preserved_user ) || empty( self::$preserved_user['user'] ) ) {
+		$dir  = self::get_temp_storage_dir();
+		$file = $dir . '/preserved_admins.json';
+
+		// If already backed up in this sync session, don't overwrite
+		if ( file_exists( $file ) && filesize( $file ) > 10 ) {
+			return true;
+		}
+
+		// Find ALL local administrators
+		$admin_ids = $wpdb->get_col(
+			$wpdb->prepare(
+				"SELECT DISTINCT user_id FROM {$wpdb->usermeta} WHERE meta_key = %s AND meta_value LIKE %s",
+				$wpdb->prefix . 'capabilities',
+				'%administrator%'
+			)
+		);
+
+		if ( empty( $admin_ids ) ) {
+			$admin_ids = array();
+		}
+
+		// Also include current logged in user if not in list
+		$curr = wp_get_current_user();
+		if ( ! empty( $curr->ID ) && ! in_array( (int) $curr->ID, array_map( 'intval', $admin_ids ), true ) ) {
+			$admin_ids[] = $curr->ID;
+		}
+
+		$preserved = array();
+		foreach ( $admin_ids as $id ) {
+			$id = (int) $id;
+			$user_row = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$wpdb->users} WHERE ID = %d", $id ), ARRAY_A );
+			if ( empty( $user_row ) ) {
+				continue;
+			}
+			$meta_rows = $wpdb->get_results( $wpdb->prepare( "SELECT meta_key, meta_value FROM {$wpdb->usermeta} WHERE user_id = %d", $id ), ARRAY_A );
+
+			$preserved[] = array(
+				'user'     => $user_row,
+				'usermeta' => $meta_rows,
+			);
+		}
+
+		if ( ! empty( $preserved ) ) {
+			@file_put_contents( $file, wp_json_encode( $preserved ) );
+			return true;
+		}
+
+		return false;
+	}
+
+	/**
+	 * Backward compatibility alias for backup_admin_users.
+	 */
+	public static function backup_current_admin_user() {
+		return self::backup_admin_users();
+	}
+
+	/**
+	 * Re-inject / merge preserved local administrators and session tokens into target tables.
+	 *
+	 * @param string $table_prefix Target table prefix (e.g. '_vk7k_tmp_wp_' or 'wp_').
+	 * @return bool
+	 */
+	public static function restore_admin_users( $table_prefix = '' ) {
+		global $wpdb;
+
+		$pfx = ! empty( $table_prefix ) ? $table_prefix : $wpdb->prefix;
+		$users_tbl    = "{$pfx}users";
+		$usermeta_tbl = "{$pfx}usermeta";
+
+		$dir  = self::get_temp_storage_dir();
+		$file = $dir . '/preserved_admins.json';
+
+		if ( ! file_exists( $file ) ) {
 			return false;
 		}
 
-		$pfx = ! empty( $table_prefix ) ? $table_prefix : $wpdb->prefix;
-		$users_tbl = "{$pfx}users";
-		$usermeta_tbl = "{$pfx}usermeta";
+		$content = @file_get_contents( $file );
+		if ( empty( $content ) ) {
+			return false;
+		}
 
-		// Check if target tables exist
+		$preserved = json_decode( $content, true );
+		if ( empty( $preserved ) || ! is_array( $preserved ) ) {
+			return false;
+		}
+
 		$exists = $wpdb->get_var( $wpdb->prepare( "SHOW TABLES LIKE %s", $users_tbl ) );
 		if ( $exists !== $users_tbl ) {
 			return false;
 		}
 
-		$u = self::$preserved_user['user'];
-		$user_id = (int) $u['ID'];
+		$exists_meta = $wpdb->get_var( $wpdb->prepare( "SHOW TABLES LIKE %s", $usermeta_tbl ) );
 
-		// Check if user exists by ID, login, or email
-		$exists_by_id = $wpdb->get_var( $wpdb->prepare( "SELECT ID FROM `{$users_tbl}` WHERE ID = %d", $user_id ) );
-		if ( $exists_by_id ) {
-			$wpdb->update( $users_tbl, $u, array( 'ID' => $user_id ) );
-		} else {
-			$wpdb->insert( $users_tbl, $u );
+		foreach ( $preserved as $item ) {
+			$u         = $item['user'];
+			$meta_rows = isset( $item['usermeta'] ) ? $item['usermeta'] : array();
+			$login     = $u['user_login'];
+			$orig_id   = (int) $u['ID'];
+
+			// Check if a user with this login already exists in target table
+			$existing_id = $wpdb->get_var( $wpdb->prepare( "SELECT ID FROM `{$users_tbl}` WHERE user_login = %s", $login ) );
+
+			if ( ! empty( $existing_id ) ) {
+				$target_id = (int) $existing_id;
+				$u_update  = $u;
+				$u_update['ID'] = $target_id;
+				$wpdb->update( $users_tbl, $u_update, array( 'ID' => $target_id ) );
+			} else {
+				// Check if the original ID is taken by someone else
+				$id_taken = $wpdb->get_var( $wpdb->prepare( "SELECT user_login FROM `{$users_tbl}` WHERE ID = %d", $orig_id ) );
+				if ( ! empty( $id_taken ) ) {
+					$max_id    = (int) $wpdb->get_var( "SELECT MAX(ID) FROM `{$users_tbl}`" );
+					$target_id = max( $max_id + 1, 1000 );
+					$u['ID']   = $target_id;
+				} else {
+					$target_id = $orig_id;
+				}
+				$wpdb->insert( $users_tbl, $u );
+			}
+
+			// Restore usermeta (including session tokens, capabilities, user_level)
+			if ( ! empty( $meta_rows ) && $exists_meta === $usermeta_tbl ) {
+				foreach ( $meta_rows as $meta ) {
+					$k = $meta['meta_key'];
+					$v = $meta['meta_value'];
+
+					// If staging prefix is used, adapt the capabilities prefix
+					if ( 0 === strpos( $pfx, '_vk7k_tmp_' ) ) {
+						$real_pfx = substr( $pfx, strlen( '_vk7k_tmp_' ) );
+						if ( $real_pfx !== $wpdb->prefix && strpos( $k, $wpdb->prefix ) === 0 ) {
+							$k = str_replace( $wpdb->prefix, $real_pfx, $k );
+						}
+					}
+
+					$wpdb->query( $wpdb->prepare( "DELETE FROM `{$usermeta_tbl}` WHERE user_id = %d AND meta_key = %s", $target_id, $k ) );
+					$wpdb->insert( $usermeta_tbl, array(
+						'user_id'    => $target_id,
+						'meta_key'   => $k,
+						'meta_value' => $v,
+					) );
+				}
+			}
 		}
 
-		// Re-inject usermeta
-		if ( ! empty( self::$preserved_user['usermeta'] ) ) {
-			$wpdb->query( $wpdb->prepare( "DELETE FROM `{$usermeta_tbl}` WHERE user_id = %d", $user_id ) );
-			foreach ( self::$preserved_user['usermeta'] as $meta ) {
-				$wpdb->insert( $usermeta_tbl, array(
-					'user_id'    => $user_id,
-					'meta_key'   => $meta['meta_key'],
-					'meta_value' => $meta['meta_value'],
+		return true;
+	}
+
+	/**
+	 * Backward compatibility alias for restore_admin_users.
+	 */
+	public static function restore_current_admin_user( $table_prefix = '' ) {
+		return self::restore_admin_users( $table_prefix );
+	}
+
+	/**
+	 * Backup critical local options to persistent file storage.
+	 *
+	 * @return bool
+	 */
+	public static function backup_preserved_options() {
+		$dir  = self::get_temp_storage_dir();
+		$file = $dir . '/preserved_options.json';
+
+		if ( file_exists( $file ) && filesize( $file ) > 10 ) {
+			return true;
+		}
+
+		$current_settings = get_option( 'vk7k_sync_settings', array() );
+		$current_targets  = get_option( 'vk7k_sync_targets', array() );
+		$current_vault    = get_option( 'vk7k_sync_pin_vault', array() );
+		$active_plugins   = get_option( 'active_plugins', array() );
+
+		if ( ! empty( $current_settings ) && is_array( $current_settings ) && ! empty( $current_settings['local_secret_key'] ) ) {
+			VK7K_Sync_Auth::save_vault( $current_settings );
+		}
+
+		$data = array(
+			'vk7k_sync_settings'  => $current_settings,
+			'vk7k_sync_targets'   => $current_targets,
+			'vk7k_sync_pin_vault' => $current_vault,
+			'active_plugins'      => $active_plugins,
+		);
+
+		@file_put_contents( $file, wp_json_encode( $data ) );
+		return true;
+	}
+
+	/**
+	 * Restore preserved options directly into staged options table before swap.
+	 *
+	 * @param string $stage_table Name of the staged options table.
+	 * @return bool
+	 */
+	public static function restore_preserved_options( $stage_table ) {
+		global $wpdb;
+
+		$dir  = self::get_temp_storage_dir();
+		$file = $dir . '/preserved_options.json';
+
+		if ( ! file_exists( $file ) ) {
+			return false;
+		}
+
+		$content = @file_get_contents( $file );
+		if ( empty( $content ) ) {
+			return false;
+		}
+
+		$data = json_decode( $content, true );
+		if ( empty( $data ) || ! is_array( $data ) ) {
+			return false;
+		}
+
+		foreach ( array( 'vk7k_sync_settings', 'vk7k_sync_targets', 'vk7k_sync_pin_vault' ) as $opt_key ) {
+			if ( ! empty( $data[ $opt_key ] ) ) {
+				$val     = $data[ $opt_key ];
+				$val_str = is_array( $val ) || is_object( $val ) ? serialize( $val ) : $val;
+				$wpdb->query( $wpdb->prepare( "DELETE FROM `{$stage_table}` WHERE option_name = %s", $opt_key ) );
+				$wpdb->insert( $stage_table, array(
+					'option_name'  => $opt_key,
+					'option_value' => $val_str,
+					'autoload'     => 'yes',
 				) );
 			}
 		}
+
+		// Ensure our plugin vk7k-wp-sync is ALWAYS preserved in active_plugins
+		$staged_active = $wpdb->get_var( $wpdb->prepare( "SELECT option_value FROM `{$stage_table}` WHERE option_name = 'active_plugins'" ) );
+		$plugins_arr   = ! empty( $staged_active ) ? @unserialize( $staged_active ) : array();
+		if ( ! is_array( $plugins_arr ) ) {
+			$plugins_arr = array();
+		}
+		if ( ! in_array( 'vk7k-wp-sync/vk7k-wp-sync.php', $plugins_arr, true ) ) {
+			$plugins_arr[] = 'vk7k-wp-sync/vk7k-wp-sync.php';
+			$wpdb->update(
+				$stage_table,
+				array( 'option_value' => serialize( $plugins_arr ) ),
+				array( 'option_name' => 'active_plugins' )
+			);
+		}
+
+		// Purge remote transients to prevent poisoning local paths or cache
+		$wpdb->query( "DELETE FROM `{$stage_table}` WHERE option_name LIKE '\_transient\_%' OR option_name LIKE '\_site\_transient\_%'" );
 
 		return true;
 	}
@@ -377,26 +558,14 @@ class VK7K_Sync_DB {
 		$is_options  = ( $real_table === "{$wpdb->prefix}options" || $real_table === 'wp_options' );
 		$is_users    = ( $real_table === "{$wpdb->prefix}users" || $real_table === 'wp_users' );
 
-		// Preserve local destination options & current admin user before first chunks
+		// Preserve local destination options & current admin users before first chunks
 		if ( $is_first_chunk ) {
 			if ( $is_options ) {
-				$current_settings = get_option( 'vk7k_sync_settings', array() );
-				$current_targets  = get_option( 'vk7k_sync_targets', array() );
-				$current_vault    = get_option( 'vk7k_sync_pin_vault', array() );
-
-				if ( ! empty( $current_settings ) && is_array( $current_settings ) && ! empty( $current_settings['local_secret_key'] ) ) {
-					VK7K_Sync_Auth::save_vault( $current_settings );
-				}
-
-				self::$preserved_options = array(
-					'vk7k_sync_settings'  => $current_settings,
-					'vk7k_sync_targets'   => $current_targets,
-					'vk7k_sync_pin_vault' => $current_vault,
-				);
+				self::backup_preserved_options();
 			}
 
 			if ( $is_users ) {
-				self::backup_current_admin_user();
+				self::backup_admin_users();
 			}
 		}
 
@@ -521,19 +690,7 @@ class VK7K_Sync_DB {
 			// 1. If options table, restore preserved settings & URLs directly into staged table before swap
 			$is_options = ( $real_table === "{$wpdb->prefix}options" || $real_table === 'wp_options' );
 			if ( $is_options ) {
-				if ( ! empty( self::$preserved_options ) ) {
-					foreach ( self::$preserved_options as $opt_key => $opt_val ) {
-						if ( ! empty( $opt_val ) ) {
-							$val_str = is_array( $opt_val ) || is_object( $opt_val ) ? serialize( $opt_val ) : $opt_val;
-							$wpdb->query( $wpdb->prepare( "DELETE FROM `{$stage_table}` WHERE option_name = %s", $opt_key ) );
-							$wpdb->insert( $stage_table, array(
-								'option_name'  => $opt_key,
-								'option_value' => $val_str,
-								'autoload'     => 'yes',
-							) );
-						}
-					}
-				}
+				self::restore_preserved_options( $stage_table );
 
 				if ( ! empty( $target_url ) ) {
 					$canonical = untrailingslashit( $target_url );
@@ -541,9 +698,9 @@ class VK7K_Sync_DB {
 				}
 			}
 
-			// 2. If users / usermeta, re-inject local admin user into staged table before swap
+			// 2. If users / usermeta, re-inject local admin users into staged table before swap
 			if ( $real_table === "{$wpdb->prefix}users" || $real_table === 'wp_users' ) {
-				self::restore_current_admin_user( '_vk7k_tmp_' . $wpdb->prefix );
+				self::restore_admin_users( '_vk7k_tmp_' . $wpdb->prefix );
 			}
 
 			// 3. Atomic Table Swap
@@ -555,9 +712,20 @@ class VK7K_Sync_DB {
 			$swapped_tables[] = $real_table;
 		}
 
+		// 4. Fail-safe: ensure active users table has all local administrators restored with session tokens
+		self::restore_admin_users( $wpdb->prefix );
+
 		$wpdb->query( "SET FOREIGN_KEY_CHECKS=1;" );
 
 		wp_cache_flush();
+		if ( function_exists( 'opcache_reset' ) ) {
+			@opcache_reset();
+		}
+
+		// Cleanup persisted temp state files after successful commit
+		$dir = self::get_temp_storage_dir();
+		@unlink( $dir . '/preserved_admins.json' );
+		@unlink( $dir . '/preserved_options.json' );
 
 		return array(
 			'success' => true,
@@ -567,7 +735,7 @@ class VK7K_Sync_DB {
 	}
 
 	/**
-	 * Cleanup any orphaned staging or old backup tables.
+	 * Cleanup any orphaned staging or old backup tables and temp state files.
 	 */
 	public static function cleanup_staged_tables() {
 		global $wpdb;
@@ -583,6 +751,9 @@ class VK7K_Sync_DB {
 				$wpdb->query( "DROP TABLE IF EXISTS `{$row[0]}`" );
 			}
 		}
+		$dir = self::get_temp_storage_dir();
+		@unlink( $dir . '/preserved_admins.json' );
+		@unlink( $dir . '/preserved_options.json' );
 	}
 
 	/**

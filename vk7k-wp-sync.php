@@ -3,7 +3,7 @@
  * Plugin Name: VK7K WP Sync
  * Plugin URI: url de repo github aqui
  * Description: Sincronización y clonación bidireccional (Push/Pull) de WordPress. Sincroniza bases de datos complejas (WooCommerce, postmeta, options) con Search & Replace serializado recursivo y transferencia de archivos por lotes (Uploads, Temas, Plugins) vía REST API autenticada por HMAC.
- * Version: 1.2.5
+ * Version: 1.2.6
  * Author: Victor vk7k Mellado
  * Author URI: https://www.victormellado.cl
  * License: GPLv2 or later
@@ -15,7 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // Define plugin constants
-define( 'VK7K_SYNC_VERSION', '1.2.5' );
+define( 'VK7K_SYNC_VERSION', '1.2.6' );
 define( 'VK7K_SYNC_FILE', __FILE__ );
 define( 'VK7K_SYNC_PATH', plugin_dir_path( __FILE__ ) );
 define( 'VK7K_SYNC_URL', plugin_dir_url( __FILE__ ) );
