@@ -1,6 +1,6 @@
-# VK7K WP Sync
+# uxcribe.cl Sync
 
-Plugin de sincronización y clonación de sitios WordPress (Push / Pull) perteneciente a la **Suite VK7K**.
+Plugin de sincronización y clonación de sitios WordPress (Push / Pull) desarrollado por **Uxcribe.cl**.
 
 ---
 
@@ -23,6 +23,8 @@ Plugin de sincronización y clonación de sitios WordPress (Push / Pull) pertene
   - Sincroniza `wp-content/uploads`, plugins y temas.
 - **Bypass Directo de IP (DNS / Cloudflare)**:
   - Permite configurar una IP de destino para resolver peticiones cURL directamente si el DNS local aún no se ha propagado o si está detrás de proxies inversos.
+- **Menú Unificado Uxcribe.cl**:
+  - Integrado bajo el menú corporativo de WordPress **Uxcribe.cl**, unificando la administración de plugins.
 - **Panel Moderno y Registro en Tiempo Real**:
   - Barra de progreso porcentual, indicadores de etapa y consola de eventos en vivo.
 
@@ -35,14 +37,14 @@ Plugin de sincronización y clonación de sitios WordPress (Push / Pull) pertene
    - Activar el plugin en ambos sitios desde el panel de WordPress.
 2. **Configurar Roles y Claves**:
    - En el sitio de origen (ej. Local):
-     - Ir a **VK7K Sync**.
+     - Ir a **Uxcribe.cl > Sync**.
      - Seleccionar **Rol: Maestro**.
      - Copiar la **Clave Secreta Local**.
      - Pegar la **URL del WordPress Remoto** (ej. `https://demo1.uxcribe.cl/cafu.cl`).
      - Pegar la **Clave Secreta del WordPress Remoto**.
      - *(Opcional)* Ingresar la **IP Directa del Servidor** (ej. `91.98.172.110`).
    - En el sitio de destino (ej. Staging):
-     - Ir a **VK7K Sync**.
+     - Ir a **Uxcribe.cl > Sync**.
      - Seleccionar **Rol: Esclavo**.
      - Pegar la clave del Maestro.
 3. **Ejecutar la Sincronización**:
@@ -83,4 +85,14 @@ A partir de la versión **1.3.0**, VK7K WP Sync incorpora un canal formal de dis
 2. **Despliegue Manual bajo demanda**:
    - El handshake de conexión (`auth/test`) ya no sobreescribe código de forma silenciosa ni agresiva entre instancias.
    - Si se detecta una discrepancia de versión entre el sitio local y el remoto, el panel notifica la diferencia y ofrece un botón explícito: **"Desplegar vX.X.X local al remoto"** para sincronizar código únicamente cuando el administrador lo autorice.
+
+3. **Novedades en v1.3.3**:
+   - **Corrección de Error Crítico en Search & Replace (`wp_options`)**: Detección segura de instancias `__PHP_Incomplete_Class` para evitar que objetos de plugins ausentes (como SDKs de Freemius) rompan la exportación de lotes de base de datos.
+   - **Modo Mantenimiento Inteligente no bloqueante**: Bypass garantizado para peticiones locales de `admin-ajax.php`, administradores con sesión activa (`wp-admin`) y llamadas de CLI.
+   - **Limpieza SFTP en Aprovisionamiento SSH**: Eliminación segura de archivos `.maintenance` residuales sin bloquear el sitio remoto durante el emparejamiento.
+   - **Activación Automática de Plugin**: El MU-plugin de Safe-Mode registra y activa oficialmente el plugin en la base de datos tras la extracción del bundle.
+
+4. **Novedades en v1.3.4**:
+   - **Preset Optimizado «Tema y Archivos de Diseño»**: Sincronización diferencial ultra-rápida de archivos físicos del tema activo (PHP, CSS, plantillas HTML, assets y theme.json) con cero consultas/modificaciones a la Base de Datos.
+
 

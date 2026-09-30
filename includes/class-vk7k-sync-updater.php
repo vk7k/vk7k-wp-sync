@@ -118,7 +118,7 @@ class VK7K_Sync_Updater {
 	 * @return array
 	 */
 	public function filter_plugin_action_links( $links ) {
-		$settings_url = admin_url( 'admin.php?page=vk7k-wp-sync' );
+		$settings_url = admin_url( 'admin.php?page=uxcribe-sync' );
 		$check_url    = wp_nonce_url( admin_url( 'plugins.php?vk7k_check_updates=1' ), 'vk7k_force_update_check' );
 
 		$custom_links = array(
@@ -148,7 +148,7 @@ class VK7K_Sync_Updater {
 			'timeout'    => 10,
 			'headers'    => array(
 				'Accept'     => 'application/vnd.github.v3+json',
-				'User-Agent' => 'WordPress/VK7K-WP-Sync-' . ( defined( 'VK7K_SYNC_VERSION' ) ? VK7K_SYNC_VERSION : '1.3.0' ),
+				'User-Agent' => 'WordPress/VK7K-WP-Sync-' . ( defined( 'VK7K_SYNC_VERSION' ) ? VK7K_SYNC_VERSION : '1.3.4' ),
 			),
 			'sslverify'  => true,
 		);
@@ -181,7 +181,7 @@ class VK7K_Sync_Updater {
 		$release_data = array(
 			'tag_name'     => $body['tag_name'],
 			'version'      => $version,
-			'name'         => $body['name'] ?? ( 'VK7K WP Sync v' . $version ),
+			'name'         => $body['name'] ?? ( 'uxcribe.cl Sync v' . $version ),
 			'body'         => $body['body'] ?? '',
 			'download_url' => $download_url,
 			'html_url'     => $body['html_url'] ?? ( 'https://github.com/' . $this->repo . '/releases' ),
@@ -260,15 +260,15 @@ class VK7K_Sync_Updater {
 		}
 
 		$release     = $this->get_latest_release();
-		$current_ver = defined( 'VK7K_SYNC_VERSION' ) ? VK7K_SYNC_VERSION : '1.3.0';
+		$current_ver = defined( 'VK7K_SYNC_VERSION' ) ? VK7K_SYNC_VERSION : '1.3.4';
 		$latest_ver  = ( $release && ! empty( $release['version'] ) ) ? $release['version'] : $current_ver;
 		$notes       = ( $release && ! empty( $release['body'] ) ) ? nl2br( esc_html( $release['body'] ) ) : 'Consulta los detalles en el repositorio oficial de GitHub.';
 
 		$info                = new stdClass();
-		$info->name          = 'VK7K WP Sync';
+		$info->name          = 'uxcribe.cl Sync';
 		$info->slug          = $this->slug;
 		$info->version       = $latest_ver;
-		$info->author        = '<a href="https://www.victormellado.cl" target="_blank" rel="noopener noreferrer">Victor vk7k Mellado</a>';
+		$info->author        = '<a href="https://uxcribe.cl" target="_blank" rel="noopener noreferrer">Uxcribe.cl</a>';
 		$info->homepage      = 'https://github.com/' . $this->repo;
 		$info->requires      = '5.8';
 		$info->tested        = '6.7';
@@ -276,7 +276,7 @@ class VK7K_Sync_Updater {
 		$info->last_updated  = $release['published_at'] ?? '';
 		$info->download_link = $release['download_url'] ?? '';
 		$info->sections      = array(
-			'description' => '<p>Plugin de sincronización y clonación de sitios WordPress (Push/Pull) perteneciente a la Suite VK7K.</p>' .
+			'description' => '<p>Plugin de sincronización y clonación de sitios WordPress (Push/Pull) desarrollado por Uxcribe.cl.</p>' .
 				'<ul>' .
 				'<li>Sincronización bidireccional de Base de Datos con Search & Replace serializado recursivo.</li>' .
 				'<li>Transferencia de archivos diferenciales (Uploads, Temas, Plugins).</li>' .

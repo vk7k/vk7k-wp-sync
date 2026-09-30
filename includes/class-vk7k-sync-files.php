@@ -77,6 +77,11 @@ class VK7K_Sync_Files {
 			require_once ABSPATH . 'wp-admin/includes/plugin.php';
 		}
 
+		if ( function_exists( 'wp_cache_delete' ) ) {
+			wp_cache_delete( 'alloptions', 'options' );
+			wp_cache_delete( 'active_plugins', 'options' );
+		}
+
 		$all_plugins    = get_plugins();
 		$active_plugins = (array) get_option( 'active_plugins', array() );
 		$result         = array();
@@ -90,12 +95,17 @@ class VK7K_Sync_Files {
 				continue;
 			}
 
+			$is_active = in_array( $plugin_file, $active_plugins, true );
+			if ( ! $is_active && function_exists( 'is_plugin_active' ) ) {
+				$is_active = is_plugin_active( $plugin_file );
+			}
+
 			$result[] = array(
 				'slug'      => $slug,
 				'file'      => $plugin_file,
 				'name'      => $plugin_data['Name'],
 				'version'   => $plugin_data['Version'],
-				'is_active' => in_array( $plugin_file, $active_plugins, true ),
+				'is_active' => (bool) $is_active,
 			);
 		}
 
@@ -646,6 +656,51 @@ class VK7K_Sync_Files {
 			'path'    => $remote_rel_path,
 			'size'    => $size,
 		);
+	}
+
+	/**
+	 * Delete a remote file via SFTP.
+	 *
+	 * @param string $remote_rel_path
+	 * @param array  $ssh_config
+	 * @return bool
+	 */
+	public static function delete_file_via_sftp( $remote_rel_path, $ssh_config = array() ) {
+		$settings = VK7K_Sync_Auth::get_settings();
+		$host = ! empty( $ssh_config['ssh_host'] ) ? $ssh_config['ssh_host'] : ( $settings['ssh_host'] ?? '' );
+		$port = ! empty( $ssh_config['ssh_port'] ) ? (int) $ssh_config['ssh_port'] : (int) ( $settings['ssh_port'] ?? 22 );
+		$user = ! empty( $ssh_config['ssh_user'] ) ? $ssh_config['ssh_user'] : ( $settings['ssh_user'] ?? '' );
+		$pass = ! empty( $ssh_config['ssh_pass'] ) ? $ssh_config['ssh_pass'] : ( $settings['ssh_pass'] ?? '' );
+		$path = ! empty( $ssh_config['ssh_path'] ) ? $ssh_config['ssh_path'] : ( $settings['ssh_path'] ?? '' );
+
+		if ( empty( $host ) || empty( $user ) || empty( $path ) ) {
+			return false;
+		}
+
+		$remote_file_url = self::build_sftp_url(
+			$host,
+			$port,
+			$user,
+			$pass,
+			$path,
+			''
+		);
+
+		$clean_path = '/' . ltrim( untrailingslashit( $path ) . '/' . ltrim( $remote_rel_path, '/' ), '/' );
+
+		$ch = curl_init();
+		curl_setopt( $ch, CURLOPT_URL, $remote_file_url );
+		curl_setopt( $ch, CURLOPT_PROTOCOLS, CURLPROTO_SFTP );
+		curl_setopt( $ch, CURLOPT_SSH_AUTH_TYPES, CURLSSH_AUTH_PASSWORD );
+		curl_setopt( $ch, CURLOPT_TIMEOUT, 15 );
+		curl_setopt( $ch, CURLOPT_NOBODY, true );
+		curl_setopt( $ch, CURLOPT_QUOTE, array( 'rm "' . $clean_path . '"' ) );
+
+		curl_exec( $ch );
+		$curl_code = curl_errno( $ch );
+		curl_close( $ch );
+
+		return ( 0 === $curl_code );
 	}
 
 	/**

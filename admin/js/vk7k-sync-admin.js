@@ -283,7 +283,7 @@
 
 				if (res.data.version_mismatch) {
 					const rVer = res.data.remote_version || res.data.plugin_version;
-					const lVer = res.data.local_version || '1.3.0';
+					const lVer = res.data.local_version || '1.3.4';
 					const deployBtn = `<button type="button" class="button button-small vk7k-manual-deploy-btn" style="margin-left:8px;"><span class="dashicons dashicons-upload" style="vertical-align:middle;font-size:15px;width:15px;height:15px;"></span> Desplegar v${lVer} local al remoto</button>`;
 					showConnectionAlert('warning', `<strong>⚠️ Discrepancia de versiones:</strong> ${siteName} tiene Plugin v${rVer} (Local: v${lVer}). Se recomienda actualizar vía GitHub Releases o ${deployBtn}`);
 				} else {
@@ -325,7 +325,8 @@
 				sync_db: $('#vk7k-opt-db').is(':checked') ? 1 : 0,
 				sync_uploads: $('#vk7k-opt-uploads').is(':checked') ? 1 : 0,
 				sync_plugins: $('#vk7k-opt-plugins').is(':checked') ? 1 : 0,
-				sync_themes: $('#vk7k-opt-themes').is(':checked') ? 1 : 0
+				sync_themes: $('#vk7k-opt-themes').is(':checked') ? 1 : 0,
+				sync_maintenance: $('#vk7k-opt-maintenance').is(':checked') ? 1 : 0
 			};
 
 			$.post(vk7kSyncData.ajaxUrl, data, function(res) {
@@ -658,7 +659,7 @@
 
 				if (testRes.data.version_mismatch) {
 					const rVer = testRes.data.remote_version || testRes.data.plugin_version;
-					const lVer = testRes.data.local_version || '1.3.0';
+					const lVer = testRes.data.local_version || '1.3.4';
 					const deployBtn = `<button type="button" class="button button-small vk7k-manual-deploy-btn" style="margin-left:8px;"><span class="dashicons dashicons-upload" style="vertical-align:middle;font-size:15px;width:15px;height:15px;"></span> Desplegar v${lVer} local al remoto</button>`;
 					showConnectionAlert('warning', `<strong>⚠️ Conexión establecida con discrepancia de versión:</strong> ${siteName}${wpVer} tiene Plugin v${rVer} (Local: v${lVer}). ${deployBtn}`);
 				} else {
@@ -773,10 +774,10 @@
 				$('#vk7k-advanced-panel').slideUp(200);
 				$('#vk7k-selected-preset-summary').slideDown(200);
 			} else if (type === 'design_theme') {
-				// DB setup: content (for templates), options (for customizer / FSE), no orders, users, comments, logs
-				$('#vk7k-opt-db').prop('checked', true).trigger('change');
-				$('#vk7k-opt-sync-content').prop('checked', true);
-				$('#vk7k-opt-sync-options').prop('checked', true);
+				// DB setup: unchecked completely (templates are synced via theme files)
+				$('#vk7k-opt-db').prop('checked', false).trigger('change');
+				$('#vk7k-opt-sync-content').prop('checked', false);
+				$('#vk7k-opt-sync-options').prop('checked', false);
 				$('#vk7k-opt-sync-taxonomies').prop('checked', false);
 				$('#vk7k-opt-sync-comments').prop('checked', false);
 				$('#vk7k-opt-sync-wc-orders').prop('checked', false);
@@ -792,8 +793,8 @@
 				// Themes: checked (active theme)
 				$('#vk7k-opt-themes').prop('checked', true).trigger('change');
 
-				$('#vk7k-preset-summary-title').text('🎨 Diseño, Plantillas y Tema Seleccionado');
-				$('#vk7k-preset-summary-details').html('Incluye: <strong>Plantillas FSE (`wp_template`, `wp_template_part`), estilos globales, opciones de diseño y carpeta del tema activo</strong>.<br/>🔒 <em>Sin impacto en usuarios ni pedidos.</em>');
+				$('#vk7k-preset-summary-title').text('🎨 Tema y Archivos de Diseño Seleccionado');
+				$('#vk7k-preset-summary-details').html('Incluye: <strong>Carpeta física del tema activo (archivos PHP, CSS, plantillas HTML, assets y theme.json)</strong>.<br/>⚡ <em>Ultra-rápido: sincronización diferencial de archivos sin tocar la Base de Datos.</em>');
 				$('#vk7k-advanced-panel').slideUp(200);
 				$('#vk7k-selected-preset-summary').slideDown(200);
 			} else if (type === 'full_content_safe') {
@@ -1000,7 +1001,7 @@
 			typeName = 'Catálogo de WooCommerce (Productos, Fotos y Categorías)';
 			typeIcon = '🛍️';
 		} else if (selectedSyncType === 'design_theme') {
-			typeName = 'Diseño, Plantillas FSE y Temas';
+			typeName = 'Tema y Archivos de Diseño (Sin Base de Datos)';
 			typeIcon = '🎨';
 		} else if (selectedSyncType === 'full_content_safe') {
 			typeName = 'Todo el Contenido Seguro (Sin Usuarios ni Pedidos)';
@@ -1063,6 +1064,14 @@
 				</div>
 			`);
 		}
+
+		// Maintenance Mode item
+		const syncMaintenance = $('#vk7k-opt-maintenance').is(':checked');
+		$list.append(`
+			<div class="vk7k-summary-item">
+				<div class="vk7k-summary-head"><span class="dashicons dashicons-shield"></span> <strong>Modo Mantenimiento en Receptor:</strong> ${syncMaintenance ? '🔒 Activado (Se libera de forma automática al finalizar)' : '🔓 Desactivado'}</div>
+			</div>
+		`);
 
 		$('#vk7k-confirm-modal').fadeIn(150).css('display', 'flex');
 	}
@@ -1143,6 +1152,8 @@
 			});
 		}
 
+		const syncMaintenance = $('#vk7k-opt-maintenance').is(':checked');
+
 		isSyncRunning = true;
 		shouldCancel  = false;
 		$('#vk7k-modal-title').text(`Sincronización ${mode.toUpperCase()} en Progreso...`);
@@ -1181,7 +1192,33 @@
 			const opt = testRes.data.optimal_settings || { zip_chunk_mb: 4, db_batch: 1000 };
 			log(`Handshake OK. Remoto: ${testRes.data.site_name} (WP v${testRes.data.wp_version})`, 'success');
 			log(`⚡ Evaluación del Servidor: Memoria: ${opt.min_mem_mb || 256}M. Lote ZIP: ${opt.zip_chunk_mb}MB, DB: ${opt.db_batch} filas.`, 'info');
-			setProgress(10, 'Handshake verificado');
+
+			// STEP 1.5: Init & Maintenance mode on target
+			if (syncMaintenance) {
+				const destHost = mode === 'push' ? getCleanHost(remoteUrl) : 'Local';
+				log(`🔒 Activando modo mantenimiento en el sitio receptor (${destHost})...`, 'info');
+			}
+			const initRes = await $.ajax({
+				url: vk7kSyncData.ajaxUrl,
+				type: 'POST',
+				data: {
+					action: 'vk7k_sync_init',
+					nonce: vk7kSyncData.nonce,
+					mode: mode,
+					enable_maintenance: syncMaintenance ? 1 : 0,
+					remote_url: remoteUrl,
+					secret_key: remoteKey,
+					remote_ip: remoteIp
+				}
+			});
+
+			if (!initRes.success) {
+				log(`Aviso en inicio: ${getErrorMessage(initRes)}`, 'warning');
+			} else if (syncMaintenance) {
+				log('✓ Sitio receptor puesto en modo mantenimiento con éxito.', 'success');
+			}
+
+			setProgress(10, 'Inicio y Handshake completados');
 
 			if (shouldCancel) return;
 
@@ -1455,6 +1492,23 @@
 
 		} catch(err) {
 			log(`❌ ERROR CRÍTICO: ${getErrorMessage(err)}`, 'error');
+			if (syncMaintenance) {
+				try {
+					await $.ajax({
+						url: vk7kSyncData.ajaxUrl,
+						type: 'POST',
+						data: {
+							action: 'vk7k_sync_finalize',
+							nonce: vk7kSyncData.nonce,
+							mode: mode,
+							remote_url: remoteUrl,
+							secret_key: remoteKey,
+							remote_ip: remoteIp
+						}
+					});
+					log('🔓 Modo mantenimiento liberado en el sitio receptor.', 'info');
+				} catch(cleanErr) {}
+			}
 			setProgress(100, 'Error en la sincronización');
 			$('#vk7k-modal-title').text('Error en la Sincronización');
 			$('#vk7k-modal-cancel-btn').text('Cerrar').prop('disabled', false);
@@ -1471,12 +1525,30 @@
 		});
 
 		// Cancel running sync
-		$('#vk7k-modal-cancel-btn').on('click', function() {
+		$('#vk7k-modal-cancel-btn').on('click', async function() {
 			if (isSyncRunning) {
 				if (confirm('¿Estás seguro de cancelar la sincronización en curso?')) {
 					shouldCancel = true;
 					log('Cancelación solicitada por el usuario...', 'warning');
 					$(this).prop('disabled', true).text('Deteniendo...');
+					const syncMaint = $('#vk7k-opt-maintenance').is(':checked');
+					if (syncMaint && pendingSyncMode) {
+						try {
+							await $.ajax({
+								url: vk7kSyncData.ajaxUrl,
+								type: 'POST',
+								data: {
+									action: 'vk7k_sync_finalize',
+									nonce: vk7kSyncData.nonce,
+									mode: pendingSyncMode,
+									remote_url: $('#vk7k-remote-url').val(),
+									secret_key: $('#vk7k-remote-key').val(),
+									remote_ip: $('#vk7k-remote-ip').val()
+								}
+							});
+							log('🔓 Modo mantenimiento liberado tras cancelación.', 'info');
+						} catch(e) {}
+					}
 				}
 			} else {
 				$('#vk7k-progress-modal').fadeOut(150);

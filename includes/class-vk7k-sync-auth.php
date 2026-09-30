@@ -687,6 +687,7 @@ class VK7K_Sync_Auth {
 			'sync_uploads'       => 1,
 			'sync_plugins'       => 1,
 			'sync_themes'        => 1,
+			'sync_maintenance'   => 1,
 			'batch_size'         => 1000,
 			'zip_chunk_mb'       => 8,
 			'last_sync_time'     => '',

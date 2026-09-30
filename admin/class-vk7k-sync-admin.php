@@ -10,10 +10,17 @@ if ( ! defined( 'ABSPATH' ) ) {
 class VK7K_Sync_Admin {
 
 	/**
+	 * Menu hook suffix.
+	 *
+	 * @var string
+	 */
+	private $hook_suffix = '';
+
+	/**
 	 * Constructor.
 	 */
 	public function __construct() {
-		add_action( 'admin_menu', array( $this, 'register_admin_menu' ) );
+		add_action( 'admin_menu', array( $this, 'register_admin_menu' ), 10 );
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_assets' ) );
 		add_action( 'admin_init', array( $this, 'handle_legacy_slug_redirect' ) );
 	}
@@ -22,32 +29,52 @@ class VK7K_Sync_Admin {
 	 * Redirect legacy/short slug to official page slug.
 	 */
 	public function handle_legacy_slug_redirect() {
-		if ( isset( $_GET['page'] ) && 'vk7k-sync' === $_GET['page'] ) {
-			wp_safe_redirect( admin_url( 'admin.php?page=vk7k-wp-sync' ) );
-			exit;
+		if ( isset( $_GET['page'] ) ) {
+			$page = sanitize_key( $_GET['page'] );
+			if ( 'vk7k-sync' === $page || 'vk7k-wp-sync' === $page ) {
+				wp_safe_redirect( admin_url( 'admin.php?page=uxcribe-sync' ) );
+				exit;
+			}
 		}
 	}
 
 	/**
-	 * Register Admin Menu.
+	 * Register Admin Menu under the shared Uxcribe parent menu.
 	 */
 	public function register_admin_menu() {
-		add_menu_page(
-			__( 'VK7K WP Sync', 'vk7k-wp-sync' ),
-			__( 'VK7K Sync', 'vk7k-wp-sync' ),
-			'manage_options',
-			'vk7k-wp-sync',
-			array( $this, 'render_admin_page' ),
-			'dashicons-randomize',
-			75
-		);
+		if ( class_exists( 'Uxcribe_Admin_Menu' ) ) {
+			$this->hook_suffix = Uxcribe_Admin_Menu::add_subpage(
+				__( 'uxcribe.cl Sync', 'vk7k-wp-sync' ),
+				__( 'Sync', 'vk7k-wp-sync' ),
+				'manage_options',
+				'uxcribe-sync',
+				array( $this, 'render_admin_page' )
+			);
+		} else {
+			$this->hook_suffix = add_menu_page(
+				__( 'uxcribe.cl Sync', 'vk7k-wp-sync' ),
+				__( 'uxcribe.cl Sync', 'vk7k-wp-sync' ),
+				'manage_options',
+				'uxcribe-sync',
+				array( $this, 'render_admin_page' ),
+				'dashicons-randomize',
+				75
+			);
+		}
 	}
 
 	/**
 	 * Enqueue Admin CSS & JS.
 	 */
 	public function enqueue_assets( $hook ) {
-		if ( 'toplevel_page_vk7k-wp-sync' !== $hook ) {
+		$is_sync_page = false;
+		if ( ! empty( $this->hook_suffix ) && $hook === $this->hook_suffix ) {
+			$is_sync_page = true;
+		} elseif ( false !== strpos( $hook, 'uxcribe-sync' ) || false !== strpos( $hook, 'vk7k-wp-sync' ) ) {
+			$is_sync_page = true;
+		}
+
+		if ( ! $is_sync_page ) {
 			return;
 		}
 
@@ -122,10 +149,10 @@ class VK7K_Sync_Admin {
 		<div class="wrap vk7k-sync-wrap <?php echo 'slave' === $current_role ? 'is-theme-slave' : 'is-theme-master'; ?>" id="vk7k-main-wrap">
 			<header class="vk7k-header">
 				<div class="vk7k-header-brand">
-					<div class="vk7k-logo-badge">VK7K</div>
+					<div class="vk7k-logo-badge">UXCRIBE</div>
 					<div class="vk7k-header-title">
-						<h1>WP Sync <span class="vk7k-badge">v<?php echo esc_html( VK7K_SYNC_VERSION ); ?></span></h1>
-						<p class="vk7k-subtitle"><?php esc_html_e( 'Sincronización y clonación bidireccional segura entre entornos WordPress', 'vk7k-wp-sync' ); ?></p>
+						<h1>uxcribe.cl Sync <span class="vk7k-badge">v<?php echo esc_html( VK7K_SYNC_VERSION ); ?></span></h1>
+						<p class="vk7k-subtitle"><?php esc_html_e( 'Sincronización y clonación bidireccional segura entre entornos WordPress por Uxcribe.cl', 'vk7k-wp-sync' ); ?></p>
 					</div>
 				</div>
 				<div class="vk7k-header-controls">
@@ -381,14 +408,14 @@ class VK7K_Sync_Admin {
 
 						<!-- Card 2: Design & Templates -->
 						<div class="vk7k-sync-type-card" data-type="design_theme">
-							<div class="vk7k-type-badge-pill"><?php esc_html_e( 'FSE + Temas', 'vk7k-wp-sync' ); ?></div>
+							<div class="vk7k-type-badge-pill"><?php esc_html_e( 'Solo Archivos de Tema', 'vk7k-wp-sync' ); ?></div>
 							<div class="vk7k-type-icon">🎨</div>
 							<h3 class="vk7k-type-title">
 								<span class="vk7k-verb"><?php echo 'slave' === $current_role ? esc_html__( 'Traer', 'vk7k-wp-sync' ) : esc_html__( 'Enviar', 'vk7k-wp-sync' ); ?></span>
-								<?php esc_html_e( 'Diseño y Plantillas', 'vk7k-wp-sync' ); ?>
+								<?php esc_html_e( 'Tema y Archivos de Diseño', 'vk7k-wp-sync' ); ?>
 							</h3>
 							<p class="vk7k-type-desc">
-								<?php esc_html_e( 'Plantillas del editor del sitio (FSE), estilos globales, opciones de tema/customizer y carpeta del tema activo.', 'vk7k-wp-sync' ); ?>
+								<?php esc_html_e( 'Sincroniza únicamente la carpeta del tema activo (archivos PHP, CSS, plantillas HTML, assets y theme.json). Cero impacto en Base de Datos.', 'vk7k-wp-sync' ); ?>
 							</p>
 							<div class="vk7k-type-check-indicator"><span class="dashicons dashicons-yes-alt"></span></div>
 						</div>
@@ -626,6 +653,24 @@ class VK7K_Sync_Admin {
 										</label>
 									<?php endforeach; ?>
 								</div>
+							</div>
+						</div>
+
+						<!-- 5. Maintenance Mode Block -->
+						<div class="vk7k-accordion-item is-open">
+							<div class="vk7k-accordion-header">
+								<label class="vk7k-master-check">
+									<input type="checkbox" id="vk7k-opt-maintenance" <?php checked( ! isset( $settings['sync_maintenance'] ) || ! empty( $settings['sync_maintenance'] ) ); ?> />
+									<strong class="vk7k-acc-title">
+										🔒 <?php esc_html_e( 'Modo Mantenimiento en Sitio Receptor', 'vk7k-wp-sync' ); ?>
+									</strong>
+								</label>
+								<span class="vk7k-acc-arrow dashicons dashicons-arrow-down-alt2"></span>
+							</div>
+							<div class="vk7k-accordion-body">
+								<p class="description" style="margin: 0; padding: 4px 0;">
+									<?php esc_html_e( 'Activa automáticamente el modo mantenimiento en el sitio receptor mientras se actualizan los datos para prevenir errores o accesos de usuarios. Se remueve automáticamente al finalizar.', 'vk7k-wp-sync' ); ?>
+								</p>
 							</div>
 						</div>
 					</div>

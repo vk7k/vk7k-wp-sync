@@ -174,6 +174,11 @@ class VK7K_Sync_Replacer {
 		}
 
 		if ( is_object( $data ) ) {
+			// Do not attempt to inspect or alter incomplete classes (missing class definition during unserialize)
+			if ( $data instanceof __PHP_Incomplete_Class || 'stdClass' !== get_class( $data ) && false !== strpos( get_class( $data ), 'Incomplete' ) ) {
+				return $data;
+			}
+
 			$class_name = get_class( $data );
 			if ( 'stdClass' === $class_name ) {
 				$new_obj = new stdClass();
@@ -195,8 +200,8 @@ class VK7K_Sync_Replacer {
 					$new_val = $this->replace( $val );
 					$property->setValue( $data, $new_val );
 				}
-			} catch ( Exception $e ) {
-				// If reflection fails, return unmodified
+			} catch ( Throwable $e ) {
+				// If reflection fails or is blocked on protected class structures, return unmodified
 			}
 			return $data;
 		}

@@ -49,6 +49,7 @@ class VK7K_Sync_Core {
 		add_action( 'wp_ajax_vk7k_sync_test_ssh', array( $this, 'ajax_test_ssh' ) );
 		add_action( 'wp_ajax_vk7k_sync_scan_remote_paths', array( $this, 'ajax_scan_remote_paths' ) );
 		add_action( 'wp_ajax_vk7k_sync_save_settings', array( $this, 'ajax_save_settings' ) );
+		add_action( 'wp_ajax_vk7k_sync_init', array( $this, 'ajax_init' ) );
 		add_action( 'wp_ajax_vk7k_sync_get_tables', array( $this, 'ajax_get_tables' ) );
 		add_action( 'wp_ajax_vk7k_sync_db_step', array( $this, 'ajax_sync_db_step' ) );
 		add_action( 'wp_ajax_vk7k_sync_prepare_files', array( $this, 'ajax_prepare_files' ) );
@@ -192,6 +193,9 @@ class VK7K_Sync_Core {
 		if ( isset( $_POST['sync_themes'] ) ) {
 			$settings['sync_themes'] = (int) $_POST['sync_themes'];
 		}
+		if ( isset( $_POST['sync_maintenance'] ) ) {
+			$settings['sync_maintenance'] = (int) $_POST['sync_maintenance'];
+		}
 
 		VK7K_Sync_Auth::save_settings( $settings );
 
@@ -221,6 +225,27 @@ class VK7K_Sync_Core {
 			'targets_state' => $state,
 			'active_target' => VK7K_Sync_Auth::get_active_target(),
 		) );
+	}
+
+	/**
+	 * AJAX: Initialize sync phase (enable maintenance mode on receiving site if requested).
+	 */
+	public function ajax_init() {
+		$this->check_ajax_permissions();
+
+		$params = array(
+			'mode'               => isset( $_POST['mode'] ) ? sanitize_key( $_POST['mode'] ) : 'push',
+			'enable_maintenance' => isset( $_POST['enable_maintenance'] ) ? ! empty( $_POST['enable_maintenance'] ) : true,
+			'remote_url'         => isset( $_POST['remote_url'] ) ? esc_url_raw( wp_unslash( $_POST['remote_url'] ) ) : '',
+			'secret_key'         => isset( $_POST['secret_key'] ) ? sanitize_text_field( wp_unslash( $_POST['secret_key'] ) ) : '',
+			'remote_ip'          => isset( $_POST['remote_ip'] ) ? sanitize_text_field( wp_unslash( $_POST['remote_ip'] ) ) : '',
+		);
+
+		$res = VK7K_Sync_Runner::step_init( $params );
+		if ( empty( $res['success'] ) ) {
+			wp_send_json_error( $res );
+		}
+		wp_send_json_success( $res );
 	}
 
 	/**

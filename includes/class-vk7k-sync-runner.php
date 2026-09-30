@@ -956,7 +956,16 @@ class VK7K_Sync_Runner {
 			'        }' . "\n" .
 			'    }' . "\n" .
 			'}' . "\n" .
-			'if ( isset( $_SERVER["REQUEST_URI"] ) && false !== strpos( $_SERVER["REQUEST_URI"], "vk7k-sync/v1" ) ) {' . "\n" .
+			'add_action( "plugins_loaded", function() {' . "\n" .
+			'    $plugin = "vk7k-wp-sync/vk7k-wp-sync.php";' . "\n" .
+			'    $active = get_option( "active_plugins", array() );' . "\n" .
+			'    if ( is_array( $active ) && ! in_array( $plugin, $active, true ) && file_exists( WP_PLUGIN_DIR . "/" . $plugin ) ) {' . "\n" .
+			'        $active[] = $plugin;' . "\n" .
+			'        sort( $active );' . "\n" .
+			'        update_option( "active_plugins", $active );' . "\n" .
+			'    }' . "\n" .
+			'} );' . "\n" .
+			'if ( isset( $_SERVER["REQUEST_URI"] ) && false !== strpos( $_SERVER["REQUEST_URI"], "vk7k-sync" ) ) {' . "\n" .
 			'    add_filter( "enable_maintenance_mode", "__return_false", 1 );' . "\n" .
 			'    add_filter( "option_active_plugins", function( $plugins ) {' . "\n" .
 			'        if ( ! is_array( $plugins ) ) $plugins = array();' . "\n" .
@@ -970,6 +979,12 @@ class VK7K_Sync_Runner {
 		VK7K_Sync_Files::upload_buffer_via_sftp(
 			$safe_mode_code,
 			'wp-content/mu-plugins/vk7k-sync-safe-mode.php',
+			$ssh_config
+		);
+
+		// Remove any lingering .maintenance file on remote root to prevent accidental lockout
+		VK7K_Sync_Files::delete_file_via_sftp(
+			'.maintenance',
 			$ssh_config
 		);
 
@@ -1299,6 +1314,38 @@ class VK7K_Sync_Runner {
 	}
 
 	/**
+	 * Initialize sync: optionally set receiving site to maintenance mode and ensure safe mode.
+	 */
+	public static function step_init( $params ) {
+		$mode         = isset( $params['mode'] ) ? $params['mode'] : 'push';
+		$enable_maint = ! empty( $params['enable_maintenance'] );
+		$settings     = VK7K_Sync_Auth::get_settings();
+		$remote_url   = ! empty( $params['remote_url'] ) ? $params['remote_url'] : $settings['remote_url'];
+		$secret_key   = ! empty( $params['secret_key'] ) ? $params['secret_key'] : '';
+		$remote_ip    = ! empty( $params['remote_ip'] ) ? $params['remote_ip'] : '';
+
+		if ( $enable_maint ) {
+			if ( 'push' === $mode ) {
+				$res = self::send_remote_request( 'init', array(), $remote_url, $secret_key, $remote_ip );
+				if ( is_wp_error( $res ) ) {
+					return array(
+						'success' => false,
+						'message' => 'Error al activar modo mantenimiento en sitio remoto: ' . $res->get_error_message(),
+					);
+				}
+			} else {
+				VK7K_Sync_API::enable_maintenance_mode();
+			}
+		}
+
+		return array(
+			'success'     => true,
+			'maintenance' => $enable_maint,
+			'message'     => $enable_maint ? 'Modo mantenimiento activado en el sitio receptor.' : 'Fase de inicio lista.',
+		);
+	}
+
+	/**
 	 * Finalize sync operation.
 	 */
 	public static function step_finalize( $params ) {
@@ -1343,6 +1390,9 @@ class VK7K_Sync_Runner {
 			// Ensure local siteurl and home are correct
 			update_option( 'siteurl', $local_url );
 			update_option( 'home', $local_url );
+
+			// Remove maintenance mode on local site if active
+			VK7K_Sync_API::disable_maintenance_mode();
 
 			// Clear Elementor CSS cache if active
 			if ( class_exists( '\Elementor\Plugin' ) && isset( \Elementor\Plugin::$instance->files_manager ) ) {

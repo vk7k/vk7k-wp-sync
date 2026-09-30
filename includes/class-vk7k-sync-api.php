@@ -183,6 +183,27 @@ class VK7K_Sync_API {
 				'permission_callback' => array( 'VK7K_Sync_Auth', 'verify_request' ),
 			)
 		);
+
+		// Remote Plugins Management routes
+		register_rest_route(
+			self::REST_NAMESPACE,
+			'/plugins/list',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'handle_plugins_list' ),
+				'permission_callback' => array( 'VK7K_Sync_Auth', 'verify_request' ),
+			)
+		);
+
+		register_rest_route(
+			self::REST_NAMESPACE,
+			'/plugins/toggle',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'handle_plugins_toggle' ),
+				'permission_callback' => array( 'VK7K_Sync_Auth', 'verify_request' ),
+			)
+		);
 	}
 
 	/**
@@ -223,10 +244,18 @@ class VK7K_Sync_API {
 		$code = "<?php\n" .
 			"/** Plugin Name: VK7K Sync Safe-Mode & Maintenance Handler */\n" .
 			"if ( ! defined( 'ABSPATH' ) ) exit;\n" .
-			"if ( isset( \$_SERVER['REQUEST_URI'] ) && false !== strpos( \$_SERVER['REQUEST_URI'], 'vk7k-sync/v1' ) ) {\n" .
+			"\$uri   = isset( \$_SERVER['REQUEST_URI'] ) ? \$_SERVER['REQUEST_URI'] : '';\n" .
+			"\$route = isset( \$_GET['rest_route'] ) ? \$_GET['rest_route'] : '';\n" .
+			"if ( false !== strpos( \$uri, 'vk7k-sync' ) || false !== strpos( \$route, 'vk7k-sync' ) || false !== strpos( \$uri, 'admin-ajax.php' ) || false !== strpos( \$uri, 'wp-admin' ) || isset( \$_SERVER['HTTP_X_VK7K_AUTH'] ) ) {\n" .
 			"    add_filter( 'enable_maintenance_mode', '__return_false', 1 );\n" .
+			"}\n" .
+			"if ( false !== strpos( \$uri, 'vk7k-sync/v1' ) || false !== strpos( \$route, 'vk7k-sync/v1' ) ) {\n" .
 			"    add_filter( 'option_active_plugins', function( \$plugins ) {\n" .
-			"        return array( 'vk7k-wp-sync/vk7k-wp-sync.php' );\n" .
+			"        if ( ! is_array( \$plugins ) ) \$plugins = array();\n" .
+			"        if ( ! in_array( 'vk7k-wp-sync/vk7k-wp-sync.php', \$plugins, true ) ) {\n" .
+			"            \$plugins[] = 'vk7k-wp-sync/vk7k-wp-sync.php';\n" .
+			"        }\n" .
+			"        return \$plugins;\n" .
 			"    }, 1 );\n" .
 			"}\n";
 
@@ -236,15 +265,50 @@ class VK7K_Sync_API {
 	}
 
 	/**
+	 * Write smart maintenance file that blocks regular visitors but allows vk7k-sync REST API traffic.
+	 */
+	public static function enable_maintenance_mode() {
+		self::ensure_safe_mode_installed();
+
+		$maint_file = trailingslashit( wp_normalize_path( ABSPATH ) ) . '.maintenance';
+		$code       = "<?php\n" .
+			"\$uri    = isset( \$_SERVER['REQUEST_URI'] ) ? \$_SERVER['REQUEST_URI'] : '';\n" .
+			"\$route  = isset( \$_GET['rest_route'] ) ? \$_GET['rest_route'] : '';\n" .
+			"\$bypass = ( 'cli' === PHP_SAPI || defined( 'WP_CLI' ) );\n" .
+			"if ( ! \$bypass && ( false !== strpos( \$uri, 'vk7k-sync' ) || false !== strpos( \$route, 'vk7k-sync' ) || false !== strpos( \$uri, 'admin-ajax.php' ) || false !== strpos( \$uri, 'wp-admin' ) || isset( \$_SERVER['HTTP_X_VK7K_AUTH'] ) ) ) {\n" .
+			"    \$bypass = true;\n" .
+			"} elseif ( ! \$bypass && ! empty( \$_COOKIE ) ) {\n" .
+			"    foreach ( \$_COOKIE as \$k => \$v ) {\n" .
+			"        if ( 0 === strpos( \$k, 'wordpress_logged_in_' ) ) {\n" .
+			"            \$bypass = true;\n" .
+			"            break;\n" .
+			"        }\n" .
+			"    }\n" .
+			"}\n" .
+			"if ( \$bypass ) {\n" .
+			"    \$upgrading = 0;\n" .
+			"} else {\n" .
+			"    \$upgrading = time();\n" .
+			"}\n";
+
+		return ( false !== @file_put_contents( $maint_file, $code ) );
+	}
+
+	/**
+	 * Remove maintenance mode file.
+	 */
+	public static function disable_maintenance_mode() {
+		$maint_file = trailingslashit( wp_normalize_path( ABSPATH ) ) . '.maintenance';
+		if ( file_exists( $maint_file ) ) {
+			@unlink( $maint_file );
+		}
+	}
+
+	/**
 	 * Initialize sync: enable maintenance mode & ensure safe mode MU-plugin.
 	 */
 	public static function handle_init( $request ) {
-		self::ensure_safe_mode_installed();
-
-		// Enable maintenance mode for regular traffic during sync
-		$maint_file = trailingslashit( wp_normalize_path( ABSPATH ) ) . '.maintenance';
-		$code = '<?php $upgrading = ' . ( time() + 3600 ) . '; ?>';
-		@file_put_contents( $maint_file, $code );
+		self::enable_maintenance_mode();
 
 		return rest_ensure_response( array(
 			'success'     => true,
@@ -465,10 +529,7 @@ class VK7K_Sync_API {
 		}
 
 		// 3. Remove maintenance mode
-		$maint_file = trailingslashit( wp_normalize_path( ABSPATH ) ) . '.maintenance';
-		if ( file_exists( $maint_file ) ) {
-			@unlink( $maint_file );
-		}
+		self::disable_maintenance_mode();
 
 		// 4. Clear Page Builder & Block caches
 		if ( class_exists( '\Elementor\Plugin' ) && isset( \Elementor\Plugin::$instance->files_manager ) ) {
@@ -654,4 +715,85 @@ class VK7K_Sync_API {
 			'zip_base64'     => $b64,
 		) );
 	}
+
+	/**
+	 * Handle remote plugin listing.
+	 */
+	public static function handle_plugins_list( $request ) {
+		if ( ! function_exists( 'get_plugins' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		}
+		$plugins = VK7K_Sync_Files::get_available_plugins();
+		return rest_ensure_response( array(
+			'success' => true,
+			'plugins' => $plugins,
+		) );
+	}
+
+	/**
+	 * Handle remote plugin activation/deactivation.
+	 */
+	public static function handle_plugins_toggle( $request ) {
+		if ( ! function_exists( 'activate_plugin' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		}
+		$params      = $request->get_json_params();
+		$plugin_file = isset( $params['plugin_file'] ) ? sanitize_text_field( $params['plugin_file'] ) : '';
+		$action      = isset( $params['action'] ) ? sanitize_key( $params['action'] ) : 'activate';
+
+		if ( empty( $plugin_file ) ) {
+			return new WP_Error( 'vk7k_missing_plugin', 'Se requiere la ruta del archivo del plugin.', array( 'status' => 400 ) );
+		}
+
+		if ( 'activate' === $action ) {
+			global $wpdb;
+			$valid_res = validate_plugin( $plugin_file );
+			if ( is_wp_error( $valid_res ) ) {
+				return new WP_Error( 'vk7k_invalid_plugin', $valid_res->get_error_message(), array( 'status' => 400 ) );
+			}
+
+			// Get pre-existing active plugins array directly from DB
+			$raw_active = $wpdb->get_var( $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s", 'active_plugins' ) );
+			$current_active = maybe_unserialize( $raw_active );
+			if ( ! is_array( $current_active ) ) {
+				$current_active = array();
+			}
+
+			$result = activate_plugin( $plugin_file, '', false, true );
+
+			if ( ! in_array( $plugin_file, $current_active, true ) ) {
+				$current_active[] = $plugin_file;
+			}
+
+			sort( $current_active );
+			$serialized = serialize( array_values( array_unique( $current_active ) ) );
+			$wpdb->update(
+				$wpdb->options,
+				array( 'option_value' => $serialized ),
+				array( 'option_name' => 'active_plugins' )
+			);
+			wp_cache_delete( 'active_plugins', 'options' );
+			wp_cache_delete( 'alloptions', 'options' );
+
+			$active_list = maybe_unserialize( $wpdb->get_var( $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s", 'active_plugins' ) ) );
+			return rest_ensure_response( array(
+				'success'        => true,
+				'message'        => "Plugin {$plugin_file} activado con éxito.",
+				'is_active'      => in_array( $plugin_file, (array) $active_list, true ),
+				'active_plugins' => $active_list,
+				'valid_res'      => $valid_res,
+				'act_result'     => $result,
+			) );
+		} else {
+			deactivate_plugins( $plugin_file );
+			$active_list = (array) get_option( 'active_plugins', array() );
+			return rest_ensure_response( array(
+				'success'        => true,
+				'message'        => "Plugin {$plugin_file} desactivado con éxito.",
+				'is_active'      => in_array( $plugin_file, $active_list, true ),
+				'active_plugins' => $active_list,
+			) );
+		}
+	}
 }
+

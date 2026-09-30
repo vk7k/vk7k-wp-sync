@@ -1,11 +1,11 @@
 <?php
 /**
- * Plugin Name: VK7K WP Sync
- * Plugin URI: https://github.com/vk7k/vk7k-wp-sync
- * Description: Sincronización y clonación bidireccional (Push/Pull) de WordPress. Sincroniza bases de datos complejas (WooCommerce, postmeta, options) con Search & Replace serializado recursivo y transferencia de archivos por lotes (Uploads, Temas, Plugins) vía REST API autenticada por HMAC.
- * Version: 1.3.0
- * Author: Victor vk7k Mellado
- * Author URI: https://www.victormellado.cl
+ * Plugin Name: uxcribe.cl Sync
+ * Plugin URI: https://uxcribe.cl
+ * Description: Sincronización y clonación bidireccional (Push/Pull) de WordPress desarrollada por Uxcribe.cl. Sincroniza bases de datos complejas (WooCommerce, postmeta, options) con Search & Replace serializado recursivo y transferencia de archivos por lotes (Uploads, Temas, Plugins) vía REST API autenticada por HMAC.
+ * Version: 1.3.4
+ * Author: Uxcribe.cl
+ * Author URI: https://uxcribe.cl
  * License: GPLv2 or later
  * Text Domain: vk7k-wp-sync
  */
@@ -15,11 +15,14 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // Define plugin constants
-define( 'VK7K_SYNC_VERSION', '1.3.0' );
+define( 'VK7K_SYNC_VERSION', '1.3.4' );
 define( 'VK7K_SYNC_FILE', __FILE__ );
 define( 'VK7K_SYNC_PATH', plugin_dir_path( __FILE__ ) );
 define( 'VK7K_SYNC_URL', plugin_dir_url( __FILE__ ) );
 define( 'VK7K_SYNC_BASENAME', plugin_basename( __FILE__ ) );
+
+// Require shared menu handler
+require_once VK7K_SYNC_PATH . 'includes/class-uxcribe-admin-menu.php';
 
 // Require includes
 require_once VK7K_SYNC_PATH . 'includes/class-vk7k-sync-auth.php';
