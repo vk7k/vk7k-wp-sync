@@ -201,6 +201,39 @@ class VK7K_Sync_Runner {
 	/**
 	 * Run single database table chunk sync step with recursive serialized replacement.
 	 */
+	/**
+	 * Push a single post (ID + postmeta + term_relationships) directly via REST API.
+	 *
+	 * @param int $post_id
+	 * @return array
+	 */
+	public static function push_single_post( $post_id ) {
+		global $wpdb;
+		$post_row = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$wpdb->posts} WHERE ID = %d", $post_id ), ARRAY_A );
+		if ( empty( $post_row ) ) {
+			return array( 'success' => false, 'message' => 'Post local no encontrado' );
+		}
+
+		$meta_rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$wpdb->postmeta} WHERE post_id = %d", $post_id ), ARRAY_A );
+		$term_rels = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$wpdb->term_relationships} WHERE object_id = %d", $post_id ), ARRAY_A );
+
+		$settings   = VK7K_Sync_Auth::get_settings();
+		$remote_url = $settings['remote_url'];
+		$local_url  = untrailingslashit( home_url() );
+
+		$payload = array(
+			'post_id'    => $post_id,
+			'source_url' => $local_url,
+			'target_url' => $remote_url,
+		);
+
+		$res = self::send_remote_request( 'db/push-post', $payload, $remote_url );
+		if ( is_wp_error( $res ) ) {
+			return array( 'success' => false, 'message' => $res->get_error_message() );
+		}
+		return $res;
+	}
+
 	public static function step_sync_db( $params ) {
 		$mode       = isset( $params['mode'] ) ? $params['mode'] : 'push';
 		$tables     = isset( $params['tables'] ) ? (array) $params['tables'] : array();

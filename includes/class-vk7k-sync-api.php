@@ -51,10 +51,30 @@ class VK7K_Sync_API {
 
 		register_rest_route(
 			self::REST_NAMESPACE,
+			'/db/push-posts',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'handle_db_push_posts' ),
+				'permission_callback' => array( 'VK7K_Sync_Auth', 'verify_request' ),
+			)
+		);
+
+		register_rest_route(
+			self::REST_NAMESPACE,
 			'/db/import-chunk',
 			array(
 				'methods'             => 'POST',
 				'callback'            => array( __CLASS__, 'handle_db_import_chunk' ),
+				'permission_callback' => array( 'VK7K_Sync_Auth', 'verify_request' ),
+			)
+		);
+
+		register_rest_route(
+			self::REST_NAMESPACE,
+			'/db/push-post',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'handle_db_push_post' ),
 				'permission_callback' => array( 'VK7K_Sync_Auth', 'verify_request' ),
 			)
 		);
@@ -434,6 +454,86 @@ class VK7K_Sync_API {
 	/**
 	 * Create rollback backup.
 	 */
+	/**
+	 * Handle single post push (posts + postmeta + term relationships).
+	 */
+	public static function handle_db_push_post( $request ) {
+		$params  = $request->get_json_params();
+		$post_id = isset( $params['post_id'] ) ? (int) $params['post_id'] : 0;
+		if ( $post_id <= 0 ) {
+			return new WP_Error( 'vk7k_invalid_post_id', 'ID de entrada inválido', array( 'status' => 400 ) );
+		}
+
+		global $wpdb;
+		$post_row = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$wpdb->posts} WHERE ID = %d", $post_id ), ARRAY_A );
+		if ( empty( $post_row ) ) {
+			return new WP_Error( 'vk7k_post_not_found', 'Entrada no encontrada localmente', array( 'status' => 404 ) );
+		}
+
+		$meta_rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$wpdb->postmeta} WHERE post_id = %d", $post_id ), ARRAY_A );
+		$term_rels = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$wpdb->term_relationships} WHERE object_id = %d", $post_id ), ARRAY_A );
+
+		// Apply URL replacer from local to target
+		$source_url = isset( $params['source_url'] ) ? $params['source_url'] : home_url();
+		$target_url = isset( $params['target_url'] ) ? $params['target_url'] : '';
+		$replacer = null;
+		if ( ! empty( $source_url ) && ! empty( $target_url ) ) {
+			$matrix = VK7K_Sync_Replacer::build_url_matrix( $source_url, $target_url );
+			if ( ! empty( $matrix ) ) {
+				$replacer = new VK7K_Sync_Replacer( $matrix );
+			}
+		}
+
+		if ( $replacer ) {
+			foreach ( $post_row as $k => $v ) {
+				$post_row[ $k ] = $replacer->replace( $v );
+			}
+			foreach ( $meta_rows as &$m ) {
+				$m['meta_value'] = $replacer->replace( $m['meta_value'] );
+			}
+			unset( $m );
+		}
+
+		$wpdb->query( "SET FOREIGN_KEY_CHECKS=0;" );
+
+		// 1. Upsert post
+		$existing_remote_id = $wpdb->get_var( $wpdb->prepare( "SELECT ID FROM {$wpdb->posts} WHERE ID = %d", $post_id ) );
+		if ( $existing_remote_id ) {
+			$wpdb->update( $wpdb->posts, $post_row, array( 'ID' => $post_id ) );
+		} else {
+			$wpdb->insert( $wpdb->posts, $post_row );
+		}
+
+		// 2. Upsert postmeta (delete old for this post, insert fresh)
+		$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->postmeta} WHERE post_id = %d", $post_id ) );
+		foreach ( $meta_rows as $m ) {
+			unset( $m['meta_id'] );
+			$wpdb->insert( $wpdb->postmeta, $m );
+		}
+
+		// 3. Upsert term_relationships
+		$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->term_relationships} WHERE object_id = %d", $post_id ) );
+		foreach ( $term_rels as $tr ) {
+			$wpdb->insert( $wpdb->term_relationships, $tr );
+		}
+
+		$wpdb->query( "SET FOREIGN_KEY_CHECKS=1;" );
+
+		// Clear caches
+		wp_cache_flush();
+		if ( class_exists( '\Elementor\Plugin' ) && isset( \Elementor\Plugin::$instance->files_manager ) ) {
+			try { \Elementor\Plugin::$instance->files_manager->clear_cache(); } catch( \Exception $e ) {}
+		}
+		flush_rewrite_rules( true );
+
+		return rest_ensure_response( array(
+			'success' => true,
+			'post_id' => $post_id,
+			'title'   => $post_row['post_title'],
+			'message' => 'Post sincronizado individualmente con éxito.',
+		) );
+	}
+
 	public static function handle_db_backup( $request ) {
 		$result = VK7K_Sync_DB::create_rollback_backup();
 		return rest_ensure_response( $result );

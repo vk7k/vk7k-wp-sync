@@ -3,7 +3,7 @@
  * Plugin Name: uxcribe.cl Sync
  * Plugin URI: https://uxcribe.cl
  * Description: Sincronización y clonación bidireccional (Push/Pull) de WordPress desarrollada por Uxcribe.cl. Sincroniza bases de datos complejas (WooCommerce, postmeta, options) con Search & Replace serializado recursivo y transferencia de archivos por lotes (Uploads, Temas, Plugins) vía REST API autenticada por HMAC.
- * Version: 1.5.2
+ * Version: 1.5.3
  * Author: Uxcribe.cl
  * Author URI: https://uxcribe.cl
  * License: GPLv2 or later
@@ -15,7 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // Define plugin constants
-define( 'VK7K_SYNC_VERSION', '1.5.2' );
+define( 'VK7K_SYNC_VERSION', '1.5.3' );
 define( 'VK7K_SYNC_FILE', __FILE__ );
 define( 'VK7K_SYNC_PATH', plugin_dir_path( __FILE__ ) );
 define( 'VK7K_SYNC_URL', plugin_dir_url( __FILE__ ) );
