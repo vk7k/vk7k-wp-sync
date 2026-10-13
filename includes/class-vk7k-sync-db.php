@@ -309,10 +309,10 @@ class VK7K_Sync_DB {
 			return false;
 		}
 		return (
-			0 === strpos( $opt_name, 'vk7k_' ) ||
-			0 === strpos( $opt_name, '_vk7k_' ) ||
-			0 === strpos( $opt_name, '_transient_vk7k_' ) ||
-			0 === strpos( $opt_name, '_transient_timeout_vk7k_' )
+			0 === strpos( $opt_name, 'vk7k_sync_' ) ||
+			0 === strpos( $opt_name, '_vk7k_sync_' ) ||
+			0 === strpos( $opt_name, '_transient_vk7k_sync_' ) ||
+			0 === strpos( $opt_name, '_transient_timeout_vk7k_sync_' )
 		);
 	}
 
@@ -1319,12 +1319,12 @@ class VK7K_Sync_DB {
 			}
 		}
 
-		// Terms & Taxonomies for nav_menu
+		// Terms & Taxonomies for nav_menu, wp_theme, and wp_template_part_area
 		$terms = $wpdb->get_results(
-			"SELECT t.*, tt.term_taxonomy_id, tt.taxonomy, tt.description, tt.parent 
+			"SELECT t.*, tt.term_taxonomy_id, tt.taxonomy, tt.description, tt.parent, tt.count 
 			 FROM `{$wpdb->terms}` t 
 			 JOIN `{$wpdb->term_taxonomy}` tt ON t.term_id = tt.term_id 
-			 WHERE tt.taxonomy = 'nav_menu'",
+			 WHERE tt.taxonomy IN ('nav_menu', 'wp_theme', 'wp_template_part_area')",
 			ARRAY_A
 		);
 		if ( empty( $terms ) ) {

@@ -202,36 +202,251 @@ class VK7K_Sync_Runner {
 	 * Run single database table chunk sync step with recursive serialized replacement.
 	 */
 	/**
-	 * Push a single post (ID + postmeta + term_relationships) directly via REST API.
+	 * Push a single post (ID + postmeta + terms + term_relationships) directly via REST API.
 	 *
 	 * @param int $post_id
 	 * @return array
 	 */
 	public static function push_single_post( $post_id ) {
+		return self::push_posts( array( (int) $post_id ) );
+	}
+
+	/**
+	 * Push multiple posts by ID (posts + postmeta + terms + term_relationships) via REST API.
+	 *
+	 * @param array  $post_ids
+	 * @param string $purge_post_type Optional post_type to clean on remote before inserting.
+	 * @return array
+	 */
+	public static function push_posts( $post_ids = array(), $purge_post_type = '' ) {
 		global $wpdb;
-		$post_row = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$wpdb->posts} WHERE ID = %d", $post_id ), ARRAY_A );
-		if ( empty( $post_row ) ) {
-			return array( 'success' => false, 'message' => 'Post local no encontrado' );
+
+		$post_ids = array_values( array_filter( array_map( 'intval', (array) $post_ids ) ) );
+		if ( empty( $post_ids ) && empty( $purge_post_type ) ) {
+			return array( 'success' => false, 'message' => 'No se especificaron IDs de entradas para enviar.' );
 		}
 
-		$meta_rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$wpdb->postmeta} WHERE post_id = %d", $post_id ), ARRAY_A );
-		$term_rels = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$wpdb->term_relationships} WHERE object_id = %d", $post_id ), ARRAY_A );
+		$posts              = array();
+		$postmeta           = array();
+		$term_relationships = array();
+		$terms              = array();
+
+		if ( ! empty( $post_ids ) ) {
+			$ids_in = implode( ',', $post_ids );
+			$posts  = $wpdb->get_results( "SELECT * FROM `{$wpdb->posts}` WHERE ID IN ({$ids_in}) ORDER BY ID ASC", ARRAY_A ) ?: array();
+			if ( empty( $posts ) && empty( $purge_post_type ) ) {
+				return array( 'success' => false, 'message' => 'Entradas locales no encontradas para los IDs indicados.' );
+			}
+
+			$postmeta           = $wpdb->get_results( "SELECT * FROM `{$wpdb->postmeta}` WHERE post_id IN ({$ids_in}) ORDER BY meta_id ASC", ARRAY_A ) ?: array();
+			$term_relationships = $wpdb->get_results( "SELECT * FROM `{$wpdb->term_relationships}` WHERE object_id IN ({$ids_in})", ARRAY_A ) ?: array();
+
+			$tt_ids = array_values( array_unique( array_filter( array_map( 'intval', wp_list_pluck( $term_relationships, 'term_taxonomy_id' ) ) ) ) );
+			if ( ! empty( $tt_ids ) ) {
+				$tt_in = implode( ',', $tt_ids );
+				$terms = $wpdb->get_results(
+					"SELECT t.*, tt.term_taxonomy_id, tt.taxonomy, tt.description, tt.parent, tt.count
+					 FROM `{$wpdb->terms}` t
+					 JOIN `{$wpdb->term_taxonomy}` tt ON t.term_id = tt.term_id
+					 WHERE tt.term_taxonomy_id IN ({$tt_in})",
+					ARRAY_A
+				) ?: array();
+			}
+		}
 
 		$settings   = VK7K_Sync_Auth::get_settings();
-		$remote_url = $settings['remote_url'];
+		$remote_url = untrailingslashit( $settings['remote_url'] );
 		$local_url  = untrailingslashit( home_url() );
 
 		$payload = array(
-			'post_id'    => $post_id,
-			'source_url' => $local_url,
-			'target_url' => $remote_url,
+			'posts'              => $posts,
+			'postmeta'           => $postmeta,
+			'term_relationships' => $term_relationships,
+			'terms'              => $terms,
+			'purge_post_type'    => $purge_post_type,
+			'source_url'         => $local_url,
+			'target_url'         => $remote_url,
 		);
 
-		$res = self::send_remote_request( 'db/push-post', $payload, $remote_url );
+		$res = self::send_remote_request( 'db/push-posts', $payload, $remote_url );
 		if ( is_wp_error( $res ) ) {
 			return array( 'success' => false, 'message' => $res->get_error_message() );
 		}
 		return $res;
+	}
+
+	/**
+	 * Push all posts of a specific Custom Post Type (e.g. vk7k_review) to remote.
+	 *
+	 * @param string $post_type
+	 * @param bool   $purge_remote_first If true, replaces all remote posts of that post_type cleanly.
+	 * @return array
+	 */
+	public static function push_post_type( $post_type, $purge_remote_first = true ) {
+		global $wpdb;
+		$post_type = sanitize_key( $post_type );
+		if ( empty( $post_type ) ) {
+			return array( 'success' => false, 'message' => 'Tipo de contenido (post_type) inválido.' );
+		}
+
+		$ids = $wpdb->get_col(
+			$wpdb->prepare(
+				"SELECT ID FROM `{$wpdb->posts}` WHERE post_type = %s AND post_status NOT IN ('auto-draft', 'trash') ORDER BY ID ASC",
+				$post_type
+			)
+		);
+
+		return self::push_posts( $ids ?: array(), $purge_remote_first ? $post_type : '' );
+	}
+
+	/**
+	 * Push specific wp_options by option names or prefix (e.g. 'vk7k_cr_') to remote.
+	 *
+	 * @param array|string $keys_or_prefix Option name(s) or prefix.
+	 * @param bool         $is_prefix      True to query option_name LIKE '{prefix}%'.
+	 * @return array
+	 */
+	public static function push_options( $keys_or_prefix, $is_prefix = false ) {
+		global $wpdb;
+
+		$rows = array();
+		if ( $is_prefix && is_string( $keys_or_prefix ) && '' !== trim( $keys_or_prefix ) ) {
+			$like = $wpdb->esc_like( trim( $keys_or_prefix ) ) . '%';
+			$rows = $wpdb->get_results(
+				$wpdb->prepare(
+					"SELECT option_name, option_value, autoload FROM `{$wpdb->options}` WHERE option_name LIKE %s",
+					$like
+				),
+				ARRAY_A
+			) ?: array();
+		} else {
+			$keys = is_array( $keys_or_prefix ) ? $keys_or_prefix : array_map( 'trim', explode( ',', (string) $keys_or_prefix ) );
+			$keys = array_values( array_filter( $keys ) );
+			if ( ! empty( $keys ) ) {
+				$placeholders = implode( ',', array_fill( 0, count( $keys ), '%s' ) );
+				$rows         = $wpdb->get_results(
+					$wpdb->prepare(
+						"SELECT option_name, option_value, autoload FROM `{$wpdb->options}` WHERE option_name IN ({$placeholders})",
+						$keys
+					),
+					ARRAY_A
+				) ?: array();
+			}
+		}
+
+		if ( empty( $rows ) ) {
+			return array( 'success' => false, 'message' => 'No se encontraron opciones locales que coincidan.' );
+		}
+
+		$settings   = VK7K_Sync_Auth::get_settings();
+		$remote_url = untrailingslashit( $settings['remote_url'] );
+		$local_url  = untrailingslashit( home_url() );
+
+		$payload = array(
+			'options'    => $rows,
+			'source_url' => $local_url,
+			'target_url' => $remote_url,
+		);
+
+		$res = self::send_remote_request( 'db/push-options', $payload, $remote_url );
+		if ( is_wp_error( $res ) ) {
+			return array( 'success' => false, 'message' => $res->get_error_message() );
+		}
+		return $res;
+	}
+
+	/**
+	 * Push a specific plugin's files to remote and optionally activate it.
+	 *
+	 * @param string $plugin_slug Folder slug of the plugin (e.g. 'vk7k-customer-reviews').
+	 * @param bool   $activate    Whether to activate the plugin on remote after uploading.
+	 * @return array
+	 */
+	public static function push_plugin( $plugin_slug, $activate = true ) {
+		$plugin_slug = sanitize_file_name( $plugin_slug );
+		if ( empty( $plugin_slug ) ) {
+			return array( 'success' => false, 'message' => 'Slug de plugin inválido.' );
+		}
+
+		$prep = self::step_prepare_files(
+			array(
+				'mode'       => 'push',
+				'components' => array( 'plugins' ),
+				'options'    => array(
+					'selected_plugins' => array( $plugin_slug ),
+				),
+			)
+		);
+
+		if ( empty( $prep['success'] ) ) {
+			return $prep;
+		}
+
+		$total_files = (int) ( $prep['total_files'] ?? 0 );
+		$transferred = 0;
+		$offset      = 0;
+
+		while ( $offset < $total_files ) {
+			$step = self::step_sync_files_chunk(
+				array(
+					'mode'     => 'push',
+					'offset'   => $offset,
+					'chunk_mb' => 8,
+				)
+			);
+			if ( empty( $step['success'] ) ) {
+				return $step;
+			}
+			$transferred += (int) ( $step['transferred'] ?? 0 );
+			$offset       = (int) ( $step['offset'] ?? ( $offset + 1 ) );
+			if ( ! empty( $step['is_done'] ) ) {
+				break;
+			}
+		}
+
+		$activation_res = null;
+		if ( $activate ) {
+			if ( ! function_exists( 'get_plugins' ) ) {
+				require_once ABSPATH . 'wp-admin/includes/plugin.php';
+			}
+			$plugin_file = $plugin_slug . '/' . $plugin_slug . '.php';
+			$all_plugins = get_plugins();
+			foreach ( $all_plugins as $file => $data ) {
+				if ( 0 === strpos( $file, $plugin_slug . '/' ) || $file === $plugin_slug . '.php' ) {
+					$plugin_file = $file;
+					break;
+				}
+			}
+
+			$activation_res = self::send_remote_request(
+				'plugins/toggle',
+				array(
+					'plugin_file' => $plugin_file,
+					'action'      => 'activate',
+				)
+			);
+			if ( is_wp_error( $activation_res ) ) {
+				return array(
+					'success'           => false,
+					'files_transferred' => $transferred,
+					'message'           => 'Archivos enviados, pero falló la activación remota: ' . $activation_res->get_error_message(),
+				);
+			}
+		}
+
+		return array(
+			'success'           => true,
+			'plugin_slug'       => $plugin_slug,
+			'files_transferred' => $transferred,
+			'total_diff_files'  => $total_files,
+			'activated'         => $activate ? ( $activation_res['is_active'] ?? true ) : false,
+			'message'           => sprintf(
+				'Plugin %s sincronizado (%d archivos transferidos)%s.',
+				$plugin_slug,
+				$transferred,
+				$activate ? ' y activado en remoto' : ''
+			),
+		);
 	}
 
 	public static function step_sync_db( $params ) {

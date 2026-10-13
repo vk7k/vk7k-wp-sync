@@ -81,6 +81,16 @@ class VK7K_Sync_API {
 
 		register_rest_route(
 			self::REST_NAMESPACE,
+			'/db/push-options',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'handle_db_push_options' ),
+				'permission_callback' => array( 'VK7K_Sync_Auth', 'verify_request' ),
+			)
+		);
+
+		register_rest_route(
+			self::REST_NAMESPACE,
 			'/db/backup',
 			array(
 				'methods'             => 'POST',
@@ -455,27 +465,208 @@ class VK7K_Sync_API {
 	 * Create rollback backup.
 	 */
 	/**
-	 * Handle single post push (posts + postmeta + term relationships).
+	 * Handle single post push (posts + postmeta + term relationships) received from master.
 	 */
 	public static function handle_db_push_post( $request ) {
-		$params  = $request->get_json_params();
-		$post_id = isset( $params['post_id'] ) ? (int) $params['post_id'] : 0;
-		if ( $post_id <= 0 ) {
-			return new WP_Error( 'vk7k_invalid_post_id', 'ID de entrada inválido', array( 'status' => 400 ) );
+		$params = $request->get_json_params();
+
+		// Support either a full payload with post_row or delegating to handle_db_push_posts
+		if ( ! empty( $params['posts'] ) && is_array( $params['posts'] ) ) {
+			return self::handle_db_push_posts( $request );
 		}
 
+		$post_row  = isset( $params['post_row'] ) && is_array( $params['post_row'] ) ? $params['post_row'] : array();
+		$meta_rows = isset( $params['meta_rows'] ) && is_array( $params['meta_rows'] ) ? $params['meta_rows'] : array();
+		$term_rels = isset( $params['term_rels'] ) && is_array( $params['term_rels'] ) ? $params['term_rels'] : array();
+		$terms     = isset( $params['terms'] ) && is_array( $params['terms'] ) ? $params['terms'] : array();
+
+		$post_id = ! empty( $post_row['ID'] ) ? (int) $post_row['ID'] : ( isset( $params['post_id'] ) ? (int) $params['post_id'] : 0 );
+		if ( $post_id <= 0 || empty( $post_row ) ) {
+			return new WP_Error( 'vk7k_invalid_post_payload', 'Datos de entrada inválidos o vacíos.', array( 'status' => 400 ) );
+		}
+
+		$request->set_param( 'posts', array( $post_row ) );
+		$request->set_param( 'postmeta', $meta_rows );
+		$request->set_param( 'term_relationships', $term_rels );
+		$request->set_param( 'terms', $terms );
+
+		return self::handle_db_push_posts( $request );
+	}
+
+	/**
+	 * Handle batch posts push (posts + postmeta + terms + term_relationships) received from master.
+	 */
+	public static function handle_db_push_posts( $request ) {
 		global $wpdb;
-		$post_row = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$wpdb->posts} WHERE ID = %d", $post_id ), ARRAY_A );
-		if ( empty( $post_row ) ) {
-			return new WP_Error( 'vk7k_post_not_found', 'Entrada no encontrada localmente', array( 'status' => 404 ) );
+
+		$params             = $request->get_json_params();
+		$posts              = ! empty( $params['posts'] ) ? (array) $params['posts'] : (array) $request->get_param( 'posts' );
+		$postmeta           = ! empty( $params['postmeta'] ) ? (array) $params['postmeta'] : (array) $request->get_param( 'postmeta' );
+		$term_relationships = ! empty( $params['term_relationships'] ) ? (array) $params['term_relationships'] : (array) $request->get_param( 'term_relationships' );
+		$terms              = ! empty( $params['terms'] ) ? (array) $params['terms'] : (array) $request->get_param( 'terms' );
+		$purge_post_type    = ! empty( $params['purge_post_type'] ) ? sanitize_key( $params['purge_post_type'] ) : '';
+
+		if ( empty( $posts ) && empty( $purge_post_type ) ) {
+			return new WP_Error( 'vk7k_empty_posts', 'No se recibieron entradas para sincronizar.', array( 'status' => 400 ) );
 		}
 
-		$meta_rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$wpdb->postmeta} WHERE post_id = %d", $post_id ), ARRAY_A );
-		$term_rels = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$wpdb->term_relationships} WHERE object_id = %d", $post_id ), ARRAY_A );
+		$source_url = isset( $params['source_url'] ) ? esc_url_raw( $params['source_url'] ) : '';
+		$target_url = isset( $params['target_url'] ) ? esc_url_raw( $params['target_url'] ) : home_url();
+		$replacer   = null;
+		if ( ! empty( $source_url ) && ! empty( $target_url ) ) {
+			$matrix = VK7K_Sync_Replacer::build_url_matrix( $source_url, $target_url );
+			if ( ! empty( $matrix ) ) {
+				$replacer = new VK7K_Sync_Replacer( $matrix );
+			}
+		}
 
-		// Apply URL replacer from local to target
-		$source_url = isset( $params['source_url'] ) ? $params['source_url'] : home_url();
-		$target_url = isset( $params['target_url'] ) ? $params['target_url'] : '';
+		$wpdb->query( 'SET FOREIGN_KEY_CHECKS=0;' );
+
+		// Optional clean purge of a specific CPT before inserting fresh rows
+		if ( ! empty( $purge_post_type ) ) {
+			$old_ids = $wpdb->get_col( $wpdb->prepare( "SELECT ID FROM `{$wpdb->posts}` WHERE post_type = %s", $purge_post_type ) );
+			if ( ! empty( $old_ids ) ) {
+				$ids_in = implode( ',', array_map( 'intval', $old_ids ) );
+				$wpdb->query( "DELETE FROM `{$wpdb->postmeta}` WHERE post_id IN ({$ids_in})" );
+				$wpdb->query( "DELETE FROM `{$wpdb->term_relationships}` WHERE object_id IN ({$ids_in})" );
+				$wpdb->query( "DELETE FROM `{$wpdb->posts}` WHERE ID IN ({$ids_in})" );
+			}
+		}
+
+		// 1. Upsert terms & term_taxonomy if provided
+		foreach ( $terms as $t ) {
+			if ( empty( $t['term_id'] ) || empty( $t['term_taxonomy_id'] ) ) {
+				continue;
+			}
+			$wpdb->replace(
+				$wpdb->terms,
+				array(
+					'term_id'    => (int) $t['term_id'],
+					'name'       => $t['name'] ?? '',
+					'slug'       => $t['slug'] ?? '',
+					'term_group' => (int) ( $t['term_group'] ?? 0 ),
+				)
+			);
+			$wpdb->replace(
+				$wpdb->term_taxonomy,
+				array(
+					'term_taxonomy_id' => (int) $t['term_taxonomy_id'],
+					'term_id'          => (int) $t['term_id'],
+					'taxonomy'         => $t['taxonomy'] ?? '',
+					'description'      => $t['description'] ?? '',
+					'parent'           => (int) ( $t['parent'] ?? 0 ),
+					'count'            => (int) ( $t['count'] ?? 0 ),
+				)
+			);
+		}
+
+		// 2. Upsert posts
+		$synced_ids = array();
+		foreach ( $posts as $post_row ) {
+			if ( empty( $post_row['ID'] ) ) {
+				continue;
+			}
+			$pid = (int) $post_row['ID'];
+			if ( $replacer ) {
+				foreach ( $post_row as $k => $v ) {
+					if ( is_string( $v ) ) {
+						$post_row[ $k ] = $replacer->replace( $v );
+					}
+				}
+			}
+
+			// If this is an FSE template/template_part, remove any conflicting post with same post_type + post_name but different ID
+			if ( ! empty( $post_row['post_type'] ) && in_array( $post_row['post_type'], array( 'wp_template', 'wp_template_part', 'wp_global_styles' ), true ) && ! empty( $post_row['post_name'] ) ) {
+				$conflict_ids = $wpdb->get_col(
+					$wpdb->prepare(
+						"SELECT ID FROM `{$wpdb->posts}` WHERE post_type = %s AND post_name = %s AND ID != %d",
+						$post_row['post_type'],
+						$post_row['post_name'],
+						$pid
+					)
+				);
+				if ( ! empty( $conflict_ids ) ) {
+					$c_in = implode( ',', array_map( 'intval', $conflict_ids ) );
+					$wpdb->query( "DELETE FROM `{$wpdb->postmeta}` WHERE post_id IN ({$c_in})" );
+					$wpdb->query( "DELETE FROM `{$wpdb->term_relationships}` WHERE object_id IN ({$c_in})" );
+					$wpdb->query( "DELETE FROM `{$wpdb->posts}` WHERE ID IN ({$c_in})" );
+				}
+			}
+
+			$existing_id = $wpdb->get_var( $wpdb->prepare( "SELECT ID FROM `{$wpdb->posts}` WHERE ID = %d", $pid ) );
+			if ( $existing_id ) {
+				$wpdb->update( $wpdb->posts, $post_row, array( 'ID' => $pid ) );
+			} else {
+				$wpdb->insert( $wpdb->posts, $post_row );
+			}
+			$synced_ids[] = $pid;
+		}
+
+		// 3. Upsert postmeta for synced posts
+		if ( ! empty( $synced_ids ) ) {
+			$ids_in = implode( ',', array_map( 'intval', $synced_ids ) );
+			$wpdb->query( "DELETE FROM `{$wpdb->postmeta}` WHERE post_id IN ({$ids_in})" );
+			$wpdb->query( "DELETE FROM `{$wpdb->term_relationships}` WHERE object_id IN ({$ids_in})" );
+		}
+
+		$meta_count = 0;
+		foreach ( $postmeta as $m ) {
+			unset( $m['meta_id'] );
+			if ( $replacer && isset( $m['meta_value'] ) && is_string( $m['meta_value'] ) ) {
+				$m['meta_value'] = $replacer->replace( $m['meta_value'] );
+			}
+			$wpdb->insert( $wpdb->postmeta, $m );
+			$meta_count++;
+		}
+
+		// 4. Upsert term_relationships
+		foreach ( $term_relationships as $tr ) {
+			$wpdb->replace(
+				$wpdb->term_relationships,
+				array(
+					'object_id'        => (int) $tr['object_id'],
+					'term_taxonomy_id' => (int) $tr['term_taxonomy_id'],
+					'term_order'       => (int) ( $tr['term_order'] ?? 0 ),
+				)
+			);
+		}
+
+		$wpdb->query( 'SET FOREIGN_KEY_CHECKS=1;' );
+
+		wp_cache_flush();
+		if ( class_exists( '\Elementor\Plugin' ) && isset( \Elementor\Plugin::$instance->files_manager ) ) {
+			try {
+				\Elementor\Plugin::$instance->files_manager->clear_cache();
+			} catch ( \Exception $e ) {
+				// Ignore
+			}
+		}
+		flush_rewrite_rules( true );
+
+		return rest_ensure_response(
+			array(
+				'success'      => true,
+				'posts_synced' => count( $synced_ids ),
+				'post_ids'     => $synced_ids,
+				'meta_synced'  => $meta_count,
+				'message'      => sprintf( '%d entrada(s) y %d metadatos sincronizados con éxito.', count( $synced_ids ), $meta_count ),
+			)
+		);
+	}
+
+	/**
+	 * Handle selective options push received from master.
+	 */
+	public static function handle_db_push_options( $request ) {
+		$params     = $request->get_json_params();
+		$options    = isset( $params['options'] ) && is_array( $params['options'] ) ? $params['options'] : array();
+		$source_url = isset( $params['source_url'] ) ? esc_url_raw( $params['source_url'] ) : '';
+		$target_url = isset( $params['target_url'] ) ? esc_url_raw( $params['target_url'] ) : home_url();
+
+		if ( empty( $options ) ) {
+			return new WP_Error( 'vk7k_empty_options', 'No se recibieron opciones para sincronizar.', array( 'status' => 400 ) );
+		}
+
 		$replacer = null;
 		if ( ! empty( $source_url ) && ! empty( $target_url ) ) {
 			$matrix = VK7K_Sync_Replacer::build_url_matrix( $source_url, $target_url );
@@ -484,54 +675,34 @@ class VK7K_Sync_API {
 			}
 		}
 
-		if ( $replacer ) {
-			foreach ( $post_row as $k => $v ) {
-				$post_row[ $k ] = $replacer->replace( $v );
+		$updated_keys = array();
+		foreach ( $options as $opt ) {
+			if ( empty( $opt['option_name'] ) ) {
+				continue;
 			}
-			foreach ( $meta_rows as &$m ) {
-				$m['meta_value'] = $replacer->replace( $m['meta_value'] );
+			$name = sanitize_text_field( $opt['option_name'] );
+			if ( VK7K_Sync_DB::is_internal_option( $name ) ) {
+				continue;
 			}
-			unset( $m );
+			$val = $opt['option_value'] ?? '';
+			if ( $replacer && is_string( $val ) ) {
+				$val = $replacer->replace( $val );
+			}
+			$unserialized = maybe_unserialize( $val );
+			update_option( $name, $unserialized );
+			$updated_keys[] = $name;
 		}
 
-		$wpdb->query( "SET FOREIGN_KEY_CHECKS=0;" );
-
-		// 1. Upsert post
-		$existing_remote_id = $wpdb->get_var( $wpdb->prepare( "SELECT ID FROM {$wpdb->posts} WHERE ID = %d", $post_id ) );
-		if ( $existing_remote_id ) {
-			$wpdb->update( $wpdb->posts, $post_row, array( 'ID' => $post_id ) );
-		} else {
-			$wpdb->insert( $wpdb->posts, $post_row );
-		}
-
-		// 2. Upsert postmeta (delete old for this post, insert fresh)
-		$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->postmeta} WHERE post_id = %d", $post_id ) );
-		foreach ( $meta_rows as $m ) {
-			unset( $m['meta_id'] );
-			$wpdb->insert( $wpdb->postmeta, $m );
-		}
-
-		// 3. Upsert term_relationships
-		$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->term_relationships} WHERE object_id = %d", $post_id ) );
-		foreach ( $term_rels as $tr ) {
-			$wpdb->insert( $wpdb->term_relationships, $tr );
-		}
-
-		$wpdb->query( "SET FOREIGN_KEY_CHECKS=1;" );
-
-		// Clear caches
 		wp_cache_flush();
-		if ( class_exists( '\Elementor\Plugin' ) && isset( \Elementor\Plugin::$instance->files_manager ) ) {
-			try { \Elementor\Plugin::$instance->files_manager->clear_cache(); } catch( \Exception $e ) {}
-		}
-		flush_rewrite_rules( true );
 
-		return rest_ensure_response( array(
-			'success' => true,
-			'post_id' => $post_id,
-			'title'   => $post_row['post_title'],
-			'message' => 'Post sincronizado individualmente con éxito.',
-		) );
+		return rest_ensure_response(
+			array(
+				'success'      => true,
+				'options_count'=> count( $updated_keys ),
+				'updated_keys' => $updated_keys,
+				'message'      => sprintf( '%d opción(es) sincronizadas con éxito.', count( $updated_keys ) ),
+			)
+		);
 	}
 
 	public static function handle_db_backup( $request ) {
