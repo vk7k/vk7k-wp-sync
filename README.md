@@ -95,6 +95,32 @@ A partir de la versión **1.3.0**, VK7K WP Sync incorpora un canal formal de dis
 4. **Novedades en v1.3.4**:
    - **Preset Optimizado «Tema y Archivos de Diseño»**: Sincronización diferencial ultra-rápida de archivos físicos del tema activo (PHP, CSS, plantillas HTML, assets y theme.json) con cero consultas/modificaciones a la Base de Datos.
 
+### ⚡ CLI usage (run from the WordPress root)
+
+```bash
+# Test connection and get remote info
+php -r 'require "wp-load.php"; var_export(VK7K_Sync_Runner::test_connection());'
+
+# Deploy the current plugin bundle to the remote site (push mode)
+php -r 'require "wp-load.php"; var_export(VK7K_Sync_Runner::deploy_plugin_to_remote_via_rest());'
+
+# Export a chunk of a table (example for wp_options)
+php -r '
+    require "wp-load.php";
+    $body = [
+        "table" => "wp_options",
+        "offset" => 0,
+        "limit" => 100,
+        "replacements" => ["https://www.example.com" => "http://example.test"]
+    ];
+    $res = VK7K_Sync_Runner::send_remote_request("db/export-chunk", $body);
+    var_dump($res);
+';
+```
+
+The commands must be executed from the WordPress installation directory (where `wp-load.php` resides). Refer to `includes/class-vk7k-sync-cli.php` for additional CLI entry‑points and their parameters.
+
+
 5. **Novedades en v1.4.1**:
    - **Stream Binario Directo (`application/octet-stream`) en PUSH de Archivos**: Envío de paquetes ZIP en streaming binario sin conversión Base64, reduciendo a cero la sobrecarga de RAM y evitando el error HTTP 413 (*Request Entity Too Large*) provocado por las reglas de ModSecurity (`SecRequestBodyNoFilesLimit`) en servidores Apache/cPanel.
    - **Ajuste Dinámico de Lotes ZIP**: Límite de seguridad de tamaño de lote de archivos a 10 MB para máxima estabilidad y prevención de timeouts en peticiones HTTP REST.
