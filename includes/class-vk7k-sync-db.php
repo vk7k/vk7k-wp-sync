@@ -18,13 +18,7 @@ class VK7K_Sync_DB {
 	 * @return string
 	 */
 	public static function get_temp_storage_dir() {
-		$upload_dir = wp_upload_dir();
-		$dir = trailingslashit( $upload_dir['basedir'] ) . 'vk7k-sync-temp';
-		if ( ! file_exists( $dir ) ) {
-			wp_mkdir_p( $dir );
-			@file_put_contents( $dir . '/index.php', '<?php // Silence is golden' );
-		}
-		return $dir;
+		return VK7K_Sync_Files::get_temp_dir();
 	}
 
 	/**
@@ -36,7 +30,7 @@ class VK7K_Sync_DB {
 		global $wpdb;
 
 		$dir  = self::get_temp_storage_dir();
-		$file = $dir . '/preserved_admins.json';
+		$file = $dir . 'preserved_admins.json';
 
 		// If already backed up in this sync session, don't overwrite
 		if ( file_exists( $file ) && filesize( $file ) > 10 ) {
@@ -79,6 +73,7 @@ class VK7K_Sync_DB {
 
 		if ( ! empty( $preserved ) ) {
 			@file_put_contents( $file, wp_json_encode( $preserved ) );
+			@chmod( $file, 0600 );
 			return true;
 		}
 
@@ -106,7 +101,7 @@ class VK7K_Sync_DB {
 		$usermeta_tbl = "{$pfx}usermeta";
 
 		$dir  = self::get_temp_storage_dir();
-		$file = $dir . '/preserved_admins.json';
+		$file = trailingslashit( $dir ) . 'preserved_admins.json';
 
 		if ( ! file_exists( $file ) ) {
 			return false;
@@ -122,12 +117,25 @@ class VK7K_Sync_DB {
 			return false;
 		}
 
-		$exists = $wpdb->get_var( $wpdb->prepare( "SHOW TABLES LIKE %s", $users_tbl ) );
-		if ( $exists !== $users_tbl ) {
+		$all_live_tables = (array) $wpdb->get_col( "SHOW TABLES" );
+		$matched_users   = '';
+		$matched_meta    = '';
+		foreach ( $all_live_tables as $t ) {
+			if ( 0 === strcasecmp( $t, $users_tbl ) ) {
+				$matched_users = $t;
+			}
+			if ( 0 === strcasecmp( $t, $usermeta_tbl ) ) {
+				$matched_meta = $t;
+			}
+		}
+
+		if ( empty( $matched_users ) ) {
 			return false;
 		}
 
-		$exists_meta = $wpdb->get_var( $wpdb->prepare( "SHOW TABLES LIKE %s", $usermeta_tbl ) );
+		$users_tbl    = $matched_users;
+		$usermeta_tbl = ! empty( $matched_meta ) ? $matched_meta : $usermeta_tbl;
+		$exists_meta  = ! empty( $matched_meta ) ? $matched_meta : '';
 
 		foreach ( $preserved as $item ) {
 			$u         = $item['user'];
@@ -180,6 +188,9 @@ class VK7K_Sync_DB {
 			}
 		}
 
+		// Securely purge temporary preserved admins file
+		@unlink( $file );
+
 		return true;
 	}
 
@@ -197,7 +208,7 @@ class VK7K_Sync_DB {
 	 */
 	public static function backup_preserved_options() {
 		$dir  = self::get_temp_storage_dir();
-		$file = $dir . '/preserved_options.json';
+		$file = trailingslashit( $dir ) . 'preserved_options.json';
 
 		if ( file_exists( $file ) && filesize( $file ) > 10 ) {
 			return true;
@@ -220,6 +231,7 @@ class VK7K_Sync_DB {
 		);
 
 		@file_put_contents( $file, wp_json_encode( $data ) );
+		@chmod( $file, 0600 );
 		return true;
 	}
 
@@ -233,7 +245,7 @@ class VK7K_Sync_DB {
 		global $wpdb;
 
 		$dir  = self::get_temp_storage_dir();
-		$file = $dir . '/preserved_options.json';
+		$file = trailingslashit( $dir ) . 'preserved_options.json';
 
 		if ( ! file_exists( $file ) ) {
 			return false;
@@ -280,6 +292,9 @@ class VK7K_Sync_DB {
 		// Purge remote transients to prevent poisoning local paths or cache
 		$wpdb->query( "DELETE FROM `{$stage_table}` WHERE option_name LIKE '\_transient\_%' OR option_name LIKE '\_site\_transient\_%'" );
 
+		// Securely purge temporary preserved options file
+		@unlink( $file );
+
 		return true;
 	}
 
@@ -302,6 +317,77 @@ class VK7K_Sync_DB {
 	}
 
 	/**
+	 * Detect if WordPress content or core lives in a subdirectory (e.g. /wp or /wp26).
+	 * Checks siteurl vs home, content_url vs home, and samples database post content and attachments.
+	 *
+	 * @return array Array of unique detected subdirectory names (e.g. ['wp26'])
+	 */
+	public static function detect_content_subdirectories() {
+		global $wpdb;
+
+		$subdirs = array();
+
+		// 1. Check difference between site_url() and home_url()
+		$site_path = trim( (string) wp_parse_url( site_url(), PHP_URL_PATH ), '/' );
+		$home_path = trim( (string) wp_parse_url( home_url(), PHP_URL_PATH ), '/' );
+		if ( ! empty( $site_path ) && $site_path !== $home_path ) {
+			$subdirs[] = $site_path;
+		}
+
+		// 2. Check content_url() vs home_url()
+		$content_url = content_url();
+		$home_url    = home_url();
+		$home_host   = wp_parse_url( $home_url, PHP_URL_HOST );
+		if ( ! empty( $home_host ) && preg_match( '#https?://' . preg_quote( $home_host, '#' ) . '(/[^/\\s"\']+)?/wp-content#i', $content_url, $cm ) ) {
+			if ( ! empty( $cm[1] ) ) {
+				$sub = trim( $cm[1], '/' );
+				if ( ! empty( $sub ) && ! in_array( strtolower( $sub ), array( 'wp-content', 'wp-includes', 'wp-admin' ), true ) ) {
+					$subdirs[] = $sub;
+				}
+			}
+		}
+
+		// 3. Sample database (wp_posts and attachment guids) for any recurring subdirectories before /wp-content/
+		if ( isset( $wpdb->posts ) ) {
+			$samples = $wpdb->get_col(
+				"SELECT post_content FROM {$wpdb->posts} 
+				 WHERE post_content LIKE '%/wp-content/%' 
+				 ORDER BY ID DESC LIMIT 50"
+			);
+			$guid_samples = $wpdb->get_col(
+				"SELECT guid FROM {$wpdb->posts} 
+				 WHERE post_type = 'attachment' AND guid LIKE '%/wp-content/%' 
+				 ORDER BY ID DESC LIMIT 30"
+			);
+			$all_samples = array_merge( (array) $samples, (array) $guid_samples );
+
+			$counts = array();
+			foreach ( $all_samples as $text ) {
+				if ( empty( $text ) ) {
+					continue;
+				}
+				if ( preg_match_all( '#https?://[^/\\s"\']+(/[a-zA-Z0-9_\\.\\-]+)/wp-content/#i', $text, $matches, PREG_SET_ORDER ) ) {
+					foreach ( $matches as $m ) {
+						$sub = trim( $m[1], '/' );
+						if ( ! empty( $sub ) && ! in_array( strtolower( $sub ), array( 'http', 'https', 'wp-content', 'wp-includes', 'wp-admin' ), true ) ) {
+							$counts[ $sub ] = ( $counts[ $sub ] ?? 0 ) + 1;
+						}
+					}
+				}
+			}
+
+			// If any subdirectory appears more than once in the sample, consider it detected
+			foreach ( $counts as $sub => $cnt ) {
+				if ( $cnt >= 2 && ! in_array( $sub, $subdirs, true ) ) {
+					$subdirs[] = $sub;
+				}
+			}
+		}
+
+		return array_values( array_unique( $subdirs ) );
+	}
+
+	/**
 	 * Get all tables in database belonging to WordPress or custom plugins with filtering.
 	 *
 	 * @param array $options Filter options (preserve_users, exclude_logs, selected_components)
@@ -310,7 +396,8 @@ class VK7K_Sync_DB {
 	public static function get_tables( $options = array() ) {
 		global $wpdb;
 
-		$prefix = $wpdb->prefix;
+		$prefix       = $wpdb->prefix;
+		$prefix_lower = strtolower( $prefix );
 
 		// Support positive flags (default: true for content/orders/users, false for heavy logs)
 		// Also support legacy flags if passed
@@ -327,67 +414,80 @@ class VK7K_Sync_DB {
 
 		if ( ! empty( $results ) ) {
 			foreach ( $results as $row ) {
-				$table_name = $row['Name'];
+				$table_name       = $row['Name'];
+				$table_name_lower = strtolower( $table_name );
 
-				// Skip temporary backup tables
-				if ( 0 === strpos( $table_name, '_vk7k_bak_' ) ) {
+				// Skip temporary backup or staging tables
+				if ( 0 === strpos( $table_name_lower, '_vk7k_bak_' ) || 0 === strpos( $table_name_lower, '_vk7k_tmp_' ) || 0 === strpos( $table_name_lower, '_vk7k_old_' ) ) {
 					continue;
 				}
 
 				// Check Users & Meta
-				if ( ! $sync_users && ( $table_name === "{$prefix}users" || $table_name === "{$prefix}usermeta" || $table_name === "{$prefix}wc_customer_lookup" ) ) {
+				if ( ! $sync_users && (
+					$table_name_lower === "{$prefix_lower}users" ||
+					$table_name_lower === "{$prefix_lower}usermeta" ||
+					$table_name_lower === "{$prefix_lower}wc_customer_lookup"
+				) ) {
 					continue;
 				}
 
 				// Check WooCommerce Orders & Transactions
 				if ( ! $sync_wc_orders ) {
 					if (
-						0 === strpos( $table_name, "{$prefix}wc_order" ) ||
-						$table_name === "{$prefix}wc_orders" ||
-						$table_name === "{$prefix}wc_orders_meta" ||
-						$table_name === "{$prefix}wc_order_addresses" ||
-						$table_name === "{$prefix}wc_order_operational_data" ||
-						$table_name === "{$prefix}wc_order_coupon_lookup" ||
-						$table_name === "{$prefix}wc_order_product_lookup" ||
-						$table_name === "{$prefix}wc_order_stats" ||
-						$table_name === "{$prefix}wc_order_tax_lookup" ||
-						0 === strpos( $table_name, "{$prefix}woocommerce_order" ) ||
-						$table_name === "{$prefix}woocommerce_payment_tokens" ||
-						$table_name === "{$prefix}woocommerce_payment_tokenmeta" ||
-						$table_name === "{$prefix}woocommerce_sessions" ||
-						$table_name === "{$prefix}woocommerce_downloadable_product_permissions"
+						0 === strpos( $table_name_lower, "{$prefix_lower}wc_order" ) ||
+						$table_name_lower === "{$prefix_lower}wc_orders" ||
+						$table_name_lower === "{$prefix_lower}wc_orders_meta" ||
+						$table_name_lower === "{$prefix_lower}wc_order_addresses" ||
+						$table_name_lower === "{$prefix_lower}wc_order_operational_data" ||
+						$table_name_lower === "{$prefix_lower}wc_order_coupon_lookup" ||
+						$table_name_lower === "{$prefix_lower}wc_order_product_lookup" ||
+						$table_name_lower === "{$prefix_lower}wc_order_stats" ||
+						$table_name_lower === "{$prefix_lower}wc_order_tax_lookup" ||
+						0 === strpos( $table_name_lower, "{$prefix_lower}woocommerce_order" ) ||
+						$table_name_lower === "{$prefix_lower}woocommerce_payment_tokens" ||
+						$table_name_lower === "{$prefix_lower}woocommerce_payment_tokenmeta" ||
+						$table_name_lower === "{$prefix_lower}woocommerce_sessions" ||
+						$table_name_lower === "{$prefix_lower}woocommerce_downloadable_product_permissions"
 					) {
 						continue;
 					}
 				}
 
 				// Check General Content (Posts / Postmeta)
-				if ( ! $sync_content && ( $table_name === "{$prefix}posts" || $table_name === "{$prefix}postmeta" ) ) {
+				if ( ! $sync_content && (
+					$table_name_lower === "{$prefix_lower}posts" ||
+					$table_name_lower === "{$prefix_lower}postmeta"
+				) ) {
 					continue;
 				}
 
 				// Check Options
-				if ( ! $sync_options && ( $table_name === "{$prefix}options" ) ) {
+				if ( ! $sync_options && (
+					$table_name_lower === "{$prefix_lower}options"
+				) ) {
 					continue;
 				}
 
 				// Check Taxonomies
 				if ( ! $sync_taxonomies && (
-					$table_name === "{$prefix}terms" ||
-					$table_name === "{$prefix}term_taxonomy" ||
-					$table_name === "{$prefix}term_relationships" ||
-					$table_name === "{$prefix}termmeta"
+					$table_name_lower === "{$prefix_lower}terms" ||
+					$table_name_lower === "{$prefix_lower}term_taxonomy" ||
+					$table_name_lower === "{$prefix_lower}term_relationships" ||
+					$table_name_lower === "{$prefix_lower}termmeta"
 				) ) {
 					continue;
 				}
 
 				// Check Comments
-				if ( ! $sync_comments && ( $table_name === "{$prefix}comments" || $table_name === "{$prefix}commentmeta" ) ) {
+				if ( ! $sync_comments && (
+					$table_name_lower === "{$prefix_lower}comments" ||
+					$table_name_lower === "{$prefix_lower}commentmeta"
+				) ) {
 					continue;
 				}
 
 				// Include tables that match prefix or custom WP tables
-				if ( 0 === strpos( $table_name, $prefix ) || false !== strpos( $table_name, 'woocommerce' ) || false !== strpos( $table_name, 'actionscheduler' ) ) {
+				if ( 0 === strpos( $table_name_lower, $prefix_lower ) || false !== strpos( $table_name_lower, 'woocommerce' ) || false !== strpos( $table_name_lower, 'actionscheduler' ) ) {
 					$data_size  = isset( $row['Data_length'] ) ? (float) $row['Data_length'] : 0;
 					$index_size = isset( $row['Index_length'] ) ? (float) $row['Index_length'] : 0;
 					$size_mb    = round( ( $data_size + $index_size ) / ( 1024 * 1024 ), 2 );
@@ -396,18 +496,23 @@ class VK7K_Sync_DB {
 					// Check if this table is a transient log table (schema only if sync_logs is false)
 					$is_schema_only = false;
 					if ( ! $sync_logs && (
-						$table_name === "{$prefix}actionscheduler_logs" ||
-						$table_name === "{$prefix}actionscheduler_actions" ||
-						$table_name === "{$prefix}actionscheduler_claims" ||
-						$table_name === "{$prefix}woocommerce_log" ||
-						$table_name === "{$prefix}wpmailsmtp_debug_events" ||
-						$table_name === "{$prefix}wpmailsmtp_tasks_meta"
+						$table_name_lower === "{$prefix_lower}actionscheduler_logs" ||
+						$table_name_lower === "{$prefix_lower}actionscheduler_actions" ||
+						$table_name_lower === "{$prefix_lower}actionscheduler_claims" ||
+						$table_name_lower === "{$prefix_lower}woocommerce_log" ||
+						$table_name_lower === "{$prefix_lower}wpmailsmtp_debug_events" ||
+						$table_name_lower === "{$prefix_lower}wpmailsmtp_tasks_meta"
 					) ) {
 						$is_schema_only = true;
 					}
 
+					$canonical_table_name = $table_name;
+					if ( 0 === strpos( $table_name_lower, $prefix_lower ) ) {
+						$canonical_table_name = substr_replace( $table_name, $prefix, 0, strlen( $prefix ) );
+					}
+
 					$tables[] = array(
-						'name'           => $table_name,
+						'name'           => $canonical_table_name,
 						'rows'           => $is_schema_only ? 0 : $row_count,
 						'real_rows'      => $row_count,
 						'size_mb'        => $size_mb,
@@ -491,7 +596,7 @@ class VK7K_Sync_DB {
 		$rows = $wpdb->get_results( "SELECT * FROM `{$table_name}` {$order_by} LIMIT {$offset}, {$limit}", ARRAY_A );
 		$scanned_count = ! empty( $rows ) ? count( $rows ) : 0;
 
-		$is_options = ( $table_name === $wpdb->options || $table_name === "{$wpdb->prefix}options" || 'wp_options' === $table_name );
+		$is_options = ( 0 === strcasecmp( $table_name, $wpdb->options ) || 0 === strcasecmp( $table_name, "{$wpdb->prefix}options" ) || 'wp_options' === strtolower( $table_name ) );
 		$processed_rows = array();
 		if ( ! empty( $rows ) ) {
 			foreach ( $rows as $row ) {
@@ -519,8 +624,8 @@ class VK7K_Sync_DB {
 		}
 
 		$dest_table_name = $table_name;
-		if ( ! empty( $target_prefix ) && $target_prefix !== $wpdb->prefix ) {
-			if ( 0 === strpos( $table_name, $wpdb->prefix ) ) {
+		if ( ! empty( $target_prefix ) && 0 !== strcasecmp( $target_prefix, $wpdb->prefix ) ) {
+			if ( 0 === stripos( $table_name, $wpdb->prefix ) ) {
 				$dest_table_name = $target_prefix . substr( $table_name, strlen( $wpdb->prefix ) );
 			}
 		}
@@ -551,12 +656,33 @@ class VK7K_Sync_DB {
 	public static function import_table_chunk( $chunk_data, $is_first_chunk = false, $schema_sql = '' ) {
 		global $wpdb;
 
-		$real_table  = sanitize_text_field( $chunk_data['table'] );
+		$incoming_table  = sanitize_text_field( $chunk_data['table'] );
+		$all_live_tables = (array) $wpdb->get_col( "SHOW TABLES" );
+
+		// Resolve incoming table name case-insensitively against live tables in this database
+		$real_table = $incoming_table;
+		foreach ( $all_live_tables as $live_t ) {
+			if ( 0 === strcasecmp( $live_t, $incoming_table ) ) {
+				$real_table = $live_t;
+				break;
+			}
+		}
+
+		if ( $real_table === $incoming_table && ! in_array( $real_table, $all_live_tables, true ) ) {
+			$candidate = preg_replace( '/^[a-zA-Z0-9]+_/', $wpdb->prefix, $incoming_table );
+			foreach ( $all_live_tables as $live_t ) {
+				if ( 0 === strcasecmp( $live_t, $candidate ) ) {
+					$real_table = $live_t;
+					break;
+				}
+			}
+		}
+
 		$stage_table = '_vk7k_tmp_' . $real_table;
 		$columns     = ! empty( $chunk_data['columns'] ) ? (array) $chunk_data['columns'] : array();
 		$rows        = ! empty( $chunk_data['rows'] ) ? (array) $chunk_data['rows'] : array();
-		$is_options  = ( $real_table === "{$wpdb->prefix}options" || $real_table === 'wp_options' );
-		$is_users    = ( $real_table === "{$wpdb->prefix}users" || $real_table === 'wp_users' );
+		$is_options  = ( 0 === strcasecmp( $real_table, "{$wpdb->prefix}options" ) || 0 === strcasecmp( $real_table, 'wp_options' ) || 'wp_options' === strtolower( $real_table ) );
+		$is_users    = ( 0 === strcasecmp( $real_table, "{$wpdb->prefix}users" ) || 0 === strcasecmp( $real_table, 'wp_users' ) || 'wp_users' === strtolower( $real_table ) );
 
 		// Preserve local destination options & current admin users before first chunks
 		if ( $is_first_chunk ) {
@@ -579,7 +705,7 @@ class VK7K_Sync_DB {
 			$created = false;
 			if ( ! empty( $schema_sql ) ) {
 				$stage_schema = preg_replace(
-					'/(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)(?:`' . preg_quote( $real_table, '/' ) . '`|' . preg_quote( $real_table, '/' ) . ')/i',
+					'/(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)(?:`' . preg_quote( $incoming_table, '/' ) . '`|`' . preg_quote( $real_table, '/' ) . '`|' . preg_quote( $incoming_table, '/' ) . '|' . preg_quote( $real_table, '/' ) . ')/i',
 					'$1`' . $stage_table . '`',
 					$schema_sql
 				);
@@ -589,8 +715,8 @@ class VK7K_Sync_DB {
 			}
 
 			if ( ! $created ) {
-				$real_exists = $wpdb->get_var( $wpdb->prepare( "SHOW TABLES LIKE %s", $real_table ) );
-				if ( $real_exists === $real_table ) {
+				$real_exists = in_array( $real_table, $all_live_tables, true );
+				if ( $real_exists ) {
 					$wpdb->query( "CREATE TABLE `{$stage_table}` LIKE `{$real_table}`" );
 				} else {
 					$wpdb->query( $schema_sql );
@@ -666,6 +792,40 @@ class VK7K_Sync_DB {
 	}
 
 	/**
+	 * Fallback commit: replace the rows of a live table with the rows of its staged table
+	 * (used when RENAME TABLE is denied by the DB user). Runs in a transaction when supported.
+	 *
+	 * @param string $stage_table Staged table name.
+	 * @param string $real_table  Live table name.
+	 * @return array
+	 */
+	protected static function copy_stage_into_live( $stage_table, $real_table ) {
+		global $wpdb;
+
+		$stage_cols = (array) $wpdb->get_col( "SHOW COLUMNS FROM `{$stage_table}`" );
+		$real_cols  = (array) $wpdb->get_col( "SHOW COLUMNS FROM `{$real_table}`" );
+		$cols       = array_values( array_intersect( $real_cols, $stage_cols ) );
+		if ( empty( $cols ) ) {
+			return array( 'success' => false, 'message' => 'No common columns' );
+		}
+		$col_list = '`' . implode( '`, `', $cols ) . '`';
+
+		$wpdb->query( 'START TRANSACTION' );
+		$del = $wpdb->query( "DELETE FROM `{$real_table}`" );
+		$ins = ( false !== $del ) ? $wpdb->query( "INSERT INTO `{$real_table}` ({$col_list}) SELECT {$col_list} FROM `{$stage_table}`" ) : false;
+
+		if ( false === $del || false === $ins ) {
+			$msg = $wpdb->last_error;
+			$wpdb->query( 'ROLLBACK' );
+			return array( 'success' => false, 'message' => $msg );
+		}
+
+		$wpdb->query( 'COMMIT' );
+		$wpdb->query( "DROP TABLE IF EXISTS `{$stage_table}`" );
+		return array( 'success' => true, 'rows' => (int) $ins );
+	}
+
+	/**
 	 * Atomically commit all staged shadow tables (_vk7k_tmp_*) into active WordPress tables.
 	 *
 	 * @param string $target_url Canonical target URL.
@@ -681,14 +841,40 @@ class VK7K_Sync_DB {
 
 		$wpdb->query( "SET FOREIGN_KEY_CHECKS=0;" );
 
-		$swapped_tables = array();
+		$all_live_tables = (array) $wpdb->get_col( "SHOW TABLES" );
+		$swapped_tables  = array();
+		$errors          = array();
 
 		foreach ( $results as $row ) {
-			$stage_table = $row[0];
-			$real_table  = substr( $stage_table, strlen( '_vk7k_tmp_' ) );
+			$stage_table     = $row[0];
+			$candidate_table = substr( $stage_table, strlen( '_vk7k_tmp_' ) );
+
+			// Find matching live table case-insensitively
+			$real_table = '';
+			foreach ( $all_live_tables as $live_t ) {
+				if ( 0 === strcasecmp( $live_t, $candidate_table ) ) {
+					$real_table = $live_t;
+					break;
+				}
+			}
+
+			// If not found directly, try matching with active $wpdb->prefix
+			if ( empty( $real_table ) ) {
+				$candidate_with_prefix = preg_replace( '/^[a-zA-Z0-9]+_/', $wpdb->prefix, $candidate_table );
+				foreach ( $all_live_tables as $live_t ) {
+					if ( 0 === strcasecmp( $live_t, $candidate_with_prefix ) ) {
+						$real_table = $live_t;
+						break;
+					}
+				}
+			}
+
+			if ( empty( $real_table ) ) {
+				$real_table = $candidate_table;
+			}
 
 			// 1. If options table, restore preserved settings & URLs directly into staged table before swap
-			$is_options = ( $real_table === "{$wpdb->prefix}options" || $real_table === 'wp_options' );
+			$is_options = ( 0 === strcasecmp( $real_table, "{$wpdb->prefix}options" ) || 0 === strcasecmp( $real_table, 'wp_options' ) || 'wp_options' === strtolower( $real_table ) );
 			if ( $is_options ) {
 				self::restore_preserved_options( $stage_table );
 
@@ -699,17 +885,38 @@ class VK7K_Sync_DB {
 			}
 
 			// 2. If users / usermeta, re-inject local admin users into staged table before swap
-			if ( $real_table === "{$wpdb->prefix}users" || $real_table === 'wp_users' ) {
-				self::restore_admin_users( '_vk7k_tmp_' . $wpdb->prefix );
+			$is_users = ( 0 === strcasecmp( $real_table, "{$wpdb->prefix}users" ) || 0 === strcasecmp( $real_table, 'wp_users' ) || 'wp_users' === strtolower( $real_table ) );
+			if ( $is_users ) {
+				$stage_pfx = preg_replace( '/users$/i', '', $stage_table );
+				self::restore_admin_users( $stage_pfx );
 			}
 
 			// 3. Atomic Table Swap
 			$old_table = '_vk7k_old_' . $real_table;
 			$wpdb->query( "DROP TABLE IF EXISTS `{$old_table}`" );
-			$wpdb->query( "RENAME TABLE `{$real_table}` TO `{$old_table}`, `{$stage_table}` TO `{$real_table}`" );
-			$wpdb->query( "DROP TABLE IF EXISTS `{$old_table}`" );
 
-			$swapped_tables[] = $real_table;
+			$real_exists = in_array( $real_table, $all_live_tables, true );
+			if ( $real_exists ) {
+				$swap_res = $wpdb->query( "RENAME TABLE `{$real_table}` TO `{$old_table}`, `{$stage_table}` TO `{$real_table}`" );
+			} else {
+				$swap_res = $wpdb->query( "RENAME TABLE `{$stage_table}` TO `{$real_table}`" );
+			}
+
+			if ( false !== $swap_res ) {
+				$wpdb->query( "DROP TABLE IF EXISTS `{$old_table}`" );
+				$swapped_tables[] = $real_table;
+			} else {
+				$swap_error = $wpdb->last_error;
+
+				// Fallback for hosts whose MySQL user lacks ALTER/DROP-RENAME privileges (RENAME TABLE denied):
+				// copy staged rows into the live table inside a transaction, then drop the stage table.
+				$copy_res = $real_exists ? self::copy_stage_into_live( $stage_table, $real_table ) : array( 'success' => false, 'message' => 'Live table missing' );
+				if ( ! empty( $copy_res['success'] ) ) {
+					$swapped_tables[] = $real_table;
+				} else {
+					$errors[] = "Failed swapping {$stage_table} to {$real_table}: {$swap_error} | copy fallback: " . ( $copy_res['message'] ?? '' );
+				}
+			}
 		}
 
 		// 4. Fail-safe: ensure active users table has all local administrators restored with session tokens
@@ -728,9 +935,10 @@ class VK7K_Sync_DB {
 		@unlink( $dir . '/preserved_options.json' );
 
 		return array(
-			'success' => true,
+			'success' => empty( $errors ),
 			'swapped' => count( $swapped_tables ),
 			'tables'  => $swapped_tables,
+			'errors'  => $errors,
 		);
 	}
 
@@ -846,16 +1054,20 @@ class VK7K_Sync_DB {
 		$replacer = new VK7K_Sync_Replacer( $replacements );
 
 		if ( empty( $tables ) ) {
-			$tables = array(
-				$wpdb->posts,
-				$wpdb->postmeta,
-				$wpdb->options,
-				$wpdb->termmeta,
-				$wpdb->comments,
-				$wpdb->commentmeta,
-			);
-			if ( ! empty( $wpdb->links ) ) {
-				$tables[] = $wpdb->links;
+			$all_prefix_tables = $wpdb->get_col( $wpdb->prepare( "SHOW TABLES LIKE %s", $wpdb->esc_like( $wpdb->prefix ) . '%' ) );
+			if ( ! empty( $all_prefix_tables ) ) {
+				$tables = array_filter( $all_prefix_tables, function( $t ) {
+					return ( 0 !== strpos( $t, '_vk7k_bak_' ) && 0 !== strpos( $t, '_vk7k_tmp_' ) && 0 !== strpos( $t, '_vk7k_old_' ) );
+				} );
+			} else {
+				$tables = array(
+					$wpdb->posts,
+					$wpdb->postmeta,
+					$wpdb->options,
+					$wpdb->termmeta,
+					$wpdb->comments,
+					$wpdb->commentmeta,
+				);
 			}
 		}
 
@@ -899,7 +1111,7 @@ class VK7K_Sync_DB {
 				continue;
 			}
 
-			$is_options = ( $table === $wpdb->options || $table === "{$wpdb->prefix}options" || 'wp_options' === $table );
+			$is_options = ( 0 === strcasecmp( $table, $wpdb->options ) || 0 === strcasecmp( $table, "{$wpdb->prefix}options" ) || 'wp_options' === strtolower( $table ) );
 			$total_rows = (int) $wpdb->get_var( "SELECT COUNT(*) FROM `{$table}`" );
 			$chunk_size = 500;
 			$table_updated = 0;
@@ -1058,6 +1270,267 @@ class VK7K_Sync_DB {
 			'breakdown'      => $breakdown,
 			'domains_checked'=> $domains_clean,
 			'clean'          => ( 0 === $total_residual ),
+		);
+	}
+
+	/**
+	 * Export granular FSE design bundle:
+	 * - FSE & Menu post types (wp_navigation, nav_menu_item, wp_template_part, wp_template, wp_global_styles, wp_block, wp_font_family, wp_font_face)
+	 * - Associated postmeta
+	 * - Classic nav_menu terms, taxonomies, relationships
+	 * - Active theme options (theme_mods_{stylesheet}, theme_mods_{template}, nav_menu_options, widget_nav_menu)
+	 *
+	 * @param string $source_url Source site URL for domain replacements.
+	 * @param string $target_url Target site URL for domain replacements.
+	 * @return array
+	 */
+	public static function export_fse_bundle( $source_url = '', $target_url = '' ) {
+		global $wpdb;
+
+		$replacer = null;
+		if ( ! empty( $source_url ) && ! empty( $target_url ) ) {
+			$matrix   = VK7K_Sync_Replacer::build_url_matrix( $source_url, $target_url );
+			$replacer = new VK7K_Sync_Replacer( $matrix );
+		}
+
+		$fse_types = array(
+			'wp_navigation',
+			'nav_menu_item',
+			'wp_template_part',
+			'wp_template',
+			'wp_global_styles',
+			'wp_block',
+			'wp_font_family',
+			'wp_font_face',
+		);
+		$in_types = "'" . implode( "', '", array_map( 'esc_sql', $fse_types ) ) . "'";
+		$posts    = $wpdb->get_results( "SELECT * FROM `{$wpdb->posts}` WHERE post_type IN ({$in_types}) ORDER BY ID ASC", ARRAY_A );
+		if ( empty( $posts ) ) {
+			$posts = array();
+		}
+
+		$post_ids = wp_list_pluck( $posts, 'ID' );
+		$postmeta = array();
+		if ( ! empty( $post_ids ) ) {
+			$in_ids   = implode( ',', array_map( 'intval', $post_ids ) );
+			$postmeta = $wpdb->get_results( "SELECT * FROM `{$wpdb->postmeta}` WHERE post_id IN ({$in_ids}) ORDER BY meta_id ASC", ARRAY_A );
+			if ( empty( $postmeta ) ) {
+				$postmeta = array();
+			}
+		}
+
+		// Terms & Taxonomies for nav_menu
+		$terms = $wpdb->get_results(
+			"SELECT t.*, tt.term_taxonomy_id, tt.taxonomy, tt.description, tt.parent 
+			 FROM `{$wpdb->terms}` t 
+			 JOIN `{$wpdb->term_taxonomy}` tt ON t.term_id = tt.term_id 
+			 WHERE tt.taxonomy = 'nav_menu'",
+			ARRAY_A
+		);
+		if ( empty( $terms ) ) {
+			$terms = array();
+		}
+
+		$term_taxonomy_ids = wp_list_pluck( $terms, 'term_taxonomy_id' );
+		$relationships     = array();
+		if ( ! empty( $term_taxonomy_ids ) ) {
+			$in_tt_ids     = implode( ',', array_map( 'intval', $term_taxonomy_ids ) );
+			$relationships = $wpdb->get_results( "SELECT * FROM `{$wpdb->term_relationships}` WHERE term_taxonomy_id IN ({$in_tt_ids})", ARRAY_A );
+			if ( empty( $relationships ) ) {
+				$relationships = array();
+			}
+		}
+
+		// Options: active theme mods & nav menu options
+		$stylesheet = get_stylesheet();
+		$template   = get_template();
+		$opts_query = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT option_name, option_value, autoload 
+				 FROM `{$wpdb->options}` 
+				 WHERE option_name LIKE %s 
+				    OR option_name LIKE %s 
+				    OR option_name IN ('nav_menu_options', 'widget_nav_menu')",
+				$wpdb->esc_like( 'theme_mods_' . $stylesheet ) . '%',
+				$wpdb->esc_like( 'theme_mods_' . $template ) . '%'
+			),
+			ARRAY_A
+		);
+		if ( empty( $opts_query ) ) {
+			$opts_query = array();
+		}
+
+		// Apply domain replacements
+		if ( $replacer instanceof VK7K_Sync_Replacer ) {
+			foreach ( $posts as &$p ) {
+				foreach ( $p as $col => $val ) {
+					if ( is_string( $val ) && ( 'post_content' === $col || 'guid' === $col ) ) {
+						$p[ $col ] = $replacer->replace( $val );
+					}
+				}
+			}
+			unset( $p );
+
+			foreach ( $postmeta as &$pm ) {
+				if ( isset( $pm['meta_value'] ) && is_string( $pm['meta_value'] ) ) {
+					$pm['meta_value'] = $replacer->replace( $pm['meta_value'] );
+				}
+			}
+			unset( $pm );
+
+			foreach ( $opts_query as &$opt ) {
+				if ( isset( $opt['option_value'] ) && is_string( $opt['option_value'] ) ) {
+					$opt['option_value'] = $replacer->replace( $opt['option_value'] );
+				}
+			}
+			unset( $opt );
+		}
+
+		return array(
+			'success'       => true,
+			'stylesheet'    => $stylesheet,
+			'template'      => $template,
+			'posts'         => $posts,
+			'postmeta'      => $postmeta,
+			'terms'         => $terms,
+			'relationships' => $relationships,
+			'options'       => $opts_query,
+			'timestamp'     => time(),
+		);
+	}
+
+	/**
+	 * Import granular FSE design bundle into destination database.
+	 * Safely updates FSE posts, postmeta, nav_menu terms, and theme_mods without touching pages, posts or orders.
+	 *
+	 * @param array  $bundle
+	 * @param string $source_url Source site URL for domain replacements if not replaced yet.
+	 * @param string $target_url Target site URL for domain replacements.
+	 * @return array
+	 */
+	public static function import_fse_bundle( $bundle, $source_url = '', $target_url = '' ) {
+		global $wpdb;
+
+		if ( empty( $bundle ) || ! is_array( $bundle ) ) {
+			return array( 'success' => false, 'message' => 'Paquete FSE inválido o vacío.' );
+		}
+
+		$replacer = null;
+		if ( ! empty( $source_url ) && ! empty( $target_url ) ) {
+			$matrix   = VK7K_Sync_Replacer::build_url_matrix( $source_url, $target_url );
+			$replacer = new VK7K_Sync_Replacer( $matrix );
+		}
+
+		$wpdb->query( "SET FOREIGN_KEY_CHECKS=0;" );
+
+		$fse_types = array(
+			'wp_navigation',
+			'nav_menu_item',
+			'wp_template_part',
+			'wp_template',
+			'wp_global_styles',
+			'wp_block',
+			'wp_font_family',
+			'wp_font_face',
+		);
+		$in_types = "'" . implode( "', '", array_map( 'esc_sql', $fse_types ) ) . "'";
+
+		// 1. Purge existing FSE posts and their postmeta so old menus/templates don't collide or become zombies
+		$old_ids = $wpdb->get_col( "SELECT ID FROM `{$wpdb->posts}` WHERE post_type IN ({$in_types})" );
+		if ( ! empty( $old_ids ) ) {
+			$ids_str = implode( ',', array_map( 'intval', $old_ids ) );
+			$wpdb->query( "DELETE FROM `{$wpdb->postmeta}` WHERE post_id IN ({$ids_str})" );
+			$wpdb->query( "DELETE FROM `{$wpdb->posts}` WHERE ID IN ({$ids_str})" );
+		}
+
+		// 2. Insert incoming FSE posts
+		$posts = ! empty( $bundle['posts'] ) ? (array) $bundle['posts'] : array();
+		$inserted_posts = 0;
+		foreach ( $posts as $p ) {
+			if ( $replacer instanceof VK7K_Sync_Replacer ) {
+				foreach ( $p as $col => $val ) {
+					if ( is_string( $val ) && ( 'post_content' === $col || 'guid' === $col ) ) {
+						$p[ $col ] = $replacer->replace( $val );
+					}
+				}
+			}
+			$wpdb->insert( $wpdb->posts, $p );
+			$inserted_posts++;
+		}
+
+		// 3. Insert incoming postmeta
+		$postmeta = ! empty( $bundle['postmeta'] ) ? (array) $bundle['postmeta'] : array();
+		$inserted_meta = 0;
+		foreach ( $postmeta as $pm ) {
+			if ( $replacer instanceof VK7K_Sync_Replacer && isset( $pm['meta_value'] ) && is_string( $pm['meta_value'] ) ) {
+				$pm['meta_value'] = $replacer->replace( $pm['meta_value'] );
+			}
+			$wpdb->insert( $wpdb->postmeta, $pm );
+			$inserted_meta++;
+		}
+
+		// 4. Upsert Terms and Taxonomies for nav_menu
+		$terms = ! empty( $bundle['terms'] ) ? (array) $bundle['terms'] : array();
+		foreach ( $terms as $t ) {
+			$wpdb->replace( $wpdb->terms, array(
+				'term_id'    => (int) $t['term_id'],
+				'name'       => $t['name'],
+				'slug'       => $t['slug'],
+				'term_group' => (int) $t['term_group'],
+			) );
+
+			$wpdb->replace( $wpdb->term_taxonomy, array(
+				'term_taxonomy_id' => (int) $t['term_taxonomy_id'],
+				'term_id'          => (int) $t['term_id'],
+				'taxonomy'         => $t['taxonomy'],
+				'description'      => $t['description'] ?? '',
+				'parent'           => (int) ( $t['parent'] ?? 0 ),
+				'count'            => (int) ( $t['count'] ?? 0 ),
+			) );
+		}
+
+		// 5. Upsert term_relationships
+		$relationships = ! empty( $bundle['relationships'] ) ? (array) $bundle['relationships'] : array();
+		foreach ( $relationships as $rel ) {
+			$wpdb->replace( $wpdb->term_relationships, array(
+				'object_id'        => (int) $rel['object_id'],
+				'term_taxonomy_id' => (int) $rel['term_taxonomy_id'],
+				'term_order'       => (int) ( $rel['term_order'] ?? 0 ),
+			) );
+		}
+
+		// 6. Update options (theme_mods_*, nav_menu_options)
+		$options = ! empty( $bundle['options'] ) ? (array) $bundle['options'] : array();
+		foreach ( $options as $opt ) {
+			$opt_name = $opt['option_name'];
+			$opt_val  = $opt['option_value'];
+			if ( $replacer instanceof VK7K_Sync_Replacer && is_string( $opt_val ) ) {
+				$opt_val = $replacer->replace( $opt_val );
+			}
+			$unserialized = maybe_unserialize( $opt_val );
+			update_option( $opt_name, $unserialized );
+		}
+
+		$wpdb->query( "SET FOREIGN_KEY_CHECKS=1;" );
+
+		wp_cache_flush();
+		if ( class_exists( '\Elementor\Plugin' ) && isset( \Elementor\Plugin::$instance->files_manager ) ) {
+			try {
+				\Elementor\Plugin::$instance->files_manager->clear_cache();
+			} catch ( Exception $e ) {
+				// Ignore
+			}
+		}
+		if ( function_exists( 'opcache_reset' ) ) {
+			@opcache_reset();
+		}
+
+		return array(
+			'success'        => true,
+			'posts_synced'   => $inserted_posts,
+			'meta_synced'    => $inserted_meta,
+			'options_synced' => count( $options ),
+			'message'        => 'Diseño, menús y plantillas FSE sincronizados con éxito.',
 		);
 	}
 }

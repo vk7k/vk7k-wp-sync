@@ -52,6 +52,7 @@ class VK7K_Sync_Core {
 		add_action( 'wp_ajax_vk7k_sync_init', array( $this, 'ajax_init' ) );
 		add_action( 'wp_ajax_vk7k_sync_get_tables', array( $this, 'ajax_get_tables' ) );
 		add_action( 'wp_ajax_vk7k_sync_db_step', array( $this, 'ajax_sync_db_step' ) );
+		add_action( 'wp_ajax_vk7k_sync_fse_step', array( $this, 'ajax_sync_fse_step' ) );
 		add_action( 'wp_ajax_vk7k_sync_prepare_files', array( $this, 'ajax_prepare_files' ) );
 		add_action( 'wp_ajax_vk7k_sync_files_step', array( $this, 'ajax_sync_files_step' ) );
 		add_action( 'wp_ajax_vk7k_sync_files_sftp', array( $this, 'ajax_sync_files_sftp' ) );
@@ -298,6 +299,26 @@ class VK7K_Sync_Core {
 		);
 
 		$res = VK7K_Sync_Runner::step_sync_db( $params );
+		if ( empty( $res['success'] ) ) {
+			wp_send_json_error( $res );
+		}
+		wp_send_json_success( $res );
+	}
+
+	/**
+	 * AJAX: Execute FSE design and menus sync step.
+	 */
+	public function ajax_sync_fse_step() {
+		$this->check_ajax_permissions();
+
+		$params = array(
+			'mode'       => isset( $_POST['mode'] ) ? sanitize_key( $_POST['mode'] ) : 'push',
+			'remote_url' => isset( $_POST['remote_url'] ) ? esc_url_raw( wp_unslash( $_POST['remote_url'] ) ) : '',
+			'secret_key' => isset( $_POST['secret_key'] ) ? sanitize_text_field( wp_unslash( $_POST['secret_key'] ) ) : '',
+			'remote_ip'  => isset( $_POST['remote_ip'] ) ? sanitize_text_field( wp_unslash( $_POST['remote_ip'] ) ) : '',
+		);
+
+		$res = VK7K_Sync_Runner::step_sync_fse( $params );
 		if ( empty( $res['success'] ) ) {
 			wp_send_json_error( $res );
 		}

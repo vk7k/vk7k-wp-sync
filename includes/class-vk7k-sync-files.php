@@ -17,6 +17,7 @@ class VK7K_Sync_Files {
 
 	/**
 	 * Get temporary storage directory path.
+	 * Hardened with POSIX permissions and multi-webserver protection.
 	 *
 	 * @return string
 	 */
@@ -26,11 +27,44 @@ class VK7K_Sync_Files {
 
 		if ( ! file_exists( $temp_dir ) ) {
 			wp_mkdir_p( $temp_dir );
-			@file_put_contents( $temp_dir . '/.htaccess', "Deny from all\n" );
-			@file_put_contents( $temp_dir . '/index.html', '' );
+			@chmod( $temp_dir, 0700 );
 		}
 
+		self::secure_temp_dir( $temp_dir );
+
 		return trailingslashit( $temp_dir );
+	}
+
+	/**
+	 * Secure a directory against direct web disclosure and directory listing.
+	 *
+	 * @param string $dir
+	 */
+	public static function secure_temp_dir( $dir ) {
+		$htaccess_file = trailingslashit( $dir ) . '.htaccess';
+		$htaccess_code = "<IfModule mod_authz_core.c>\n" .
+			"    Require all denied\n" .
+			"</IfModule>\n" .
+			"<IfModule !mod_authz_core.c>\n" .
+			"    Deny from all\n" .
+			"</IfModule>\n";
+
+		if ( ! file_exists( $htaccess_file ) || false === strpos( (string) @file_get_contents( $htaccess_file ), 'Require all denied' ) ) {
+			@file_put_contents( $htaccess_file, $htaccess_code );
+			@chmod( $htaccess_file, 0644 );
+		}
+
+		$index_php = trailingslashit( $dir ) . 'index.php';
+		if ( ! file_exists( $index_php ) ) {
+			@file_put_contents( $index_php, "<?php\nhttp_response_code( 403 );\nexit;\n" );
+			@chmod( $index_php, 0644 );
+		}
+
+		$index_html = trailingslashit( $dir ) . 'index.html';
+		if ( ! file_exists( $index_html ) ) {
+			@file_put_contents( $index_html, '' );
+			@chmod( $index_html, 0644 );
+		}
 	}
 
 	/**
@@ -781,16 +815,27 @@ class VK7K_Sync_Files {
 	}
 
 	/**
-	 * Cleanup all temp files older than 1 hour.
+	 * Cleanup temp files safely, purging sensitive backups quickly while preserving directory protection files.
+	 *
+	 * @param bool $force Force removal of all temp files regardless of age.
 	 */
-	public static function cleanup_temp() {
+	public static function cleanup_temp( $force = false ) {
 		$temp_dir = self::get_temp_dir();
 		if ( is_dir( $temp_dir ) ) {
 			$files = glob( $temp_dir . '*' );
 			if ( ! empty( $files ) ) {
+				$protected_files = array( '.htaccess', 'index.php', 'index.html' );
 				foreach ( $files as $f ) {
-					if ( is_file( $f ) && ( time() - filemtime( $f ) ) > 1800 ) {
-						@unlink( $f );
+					$base = basename( $f );
+					if ( in_array( $base, $protected_files, true ) ) {
+						continue;
+					}
+					if ( is_file( $f ) ) {
+						$age = time() - filemtime( $f );
+						// Sensitive backups expire in 3 minutes; regular temp chunks expire in 10 minutes
+						if ( $force || $age > 600 || ( in_array( $base, array( 'preserved_admins.json', 'preserved_options.json' ), true ) && $age > 180 ) ) {
+							@unlink( $f );
+						}
 					}
 				}
 			}

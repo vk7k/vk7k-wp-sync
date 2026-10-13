@@ -773,6 +773,30 @@
 				$('#vk7k-preset-summary-details').html('Incluye: <strong>Productos, variaciones, atributos, categorías (`product_cat`, `product_tag`) y galería de imágenes (Uploads)</strong>.<br/>🔒 <em>Pedidos de WooCommerce y Cuentas de Usuarios quedan 100% protegidos y no serán alterados.</em>');
 				$('#vk7k-advanced-panel').slideUp(200);
 				$('#vk7k-selected-preset-summary').slideDown(200);
+			} else if (type === 'fse_design_menus') {
+				// DB setup: unchecked in UI so it triggers dedicated granular FSE step
+				$('#vk7k-opt-db').prop('checked', false).trigger('change');
+				$('#vk7k-opt-sync-content').prop('checked', false);
+				$('#vk7k-opt-sync-options').prop('checked', false);
+				$('#vk7k-opt-sync-taxonomies').prop('checked', false);
+				$('#vk7k-opt-sync-comments').prop('checked', false);
+				$('#vk7k-opt-sync-wc-orders').prop('checked', false);
+				$('#vk7k-opt-sync-users').prop('checked', false);
+				$('#vk7k-opt-sync-logs').prop('checked', false);
+
+				// Uploads: unchecked
+				$('#vk7k-opt-uploads').prop('checked', false).trigger('change');
+
+				// Plugins: unchecked
+				$('#vk7k-opt-plugins').prop('checked', false).trigger('change');
+
+				// Themes: checked (active theme)
+				$('#vk7k-opt-themes').prop('checked', true).trigger('change');
+
+				$('#vk7k-preset-summary-title').text('🖌️ Diseño, Menús y Plantillas FSE Seleccionado');
+				$('#vk7k-preset-summary-details').html('Incluye: <strong>Tema activo en disco + Menús de navegación (`wp_navigation`, `nav_menu_item`) + Cabeceras/Plantillas (`wp_template_part`, `wp_template`) + Estilos globales (`wp_global_styles`) + Asignaciones de menús (`theme_mods`)</strong>.<br/>🔒 <em>Cero riesgo de sobreescritura: Páginas, entradas del blog y pedidos de WooCommerce quedan 100% protegidos e intactos.</em>');
+				$('#vk7k-advanced-panel').slideUp(200);
+				$('#vk7k-selected-preset-summary').slideDown(200);
 			} else if (type === 'design_theme') {
 				// DB setup: unchecked completely (templates are synced via theme files)
 				$('#vk7k-opt-db').prop('checked', false).trigger('change');
@@ -793,8 +817,8 @@
 				// Themes: checked (active theme)
 				$('#vk7k-opt-themes').prop('checked', true).trigger('change');
 
-				$('#vk7k-preset-summary-title').text('🎨 Tema y Archivos de Diseño Seleccionado');
-				$('#vk7k-preset-summary-details').html('Incluye: <strong>Carpeta física del tema activo (archivos PHP, CSS, plantillas HTML, assets y theme.json)</strong>.<br/>⚡ <em>Ultra-rápido: sincronización diferencial de archivos sin tocar la Base de Datos.</em>');
+				$('#vk7k-preset-summary-title').text('🎨 Solo Código y Archivos de Tema Seleccionado');
+				$('#vk7k-preset-summary-details').html('Incluye: <strong>Carpeta física del tema en disco (PHP, CSS, plantillas HTML originales, assets y theme.json)</strong>.<br/>⚡ <em>Ultra-rápido: Cero impacto en Base de Datos (no incluye menús, cabeceras editadas ni opciones).</em>');
 				$('#vk7k-advanced-panel').slideUp(200);
 				$('#vk7k-selected-preset-summary').slideDown(200);
 			} else if (type === 'full_content_safe') {
@@ -816,8 +840,8 @@
 				$('#vk7k-opt-plugins').prop('checked', false).trigger('change');
 				$('#vk7k-opt-themes').prop('checked', false).trigger('change');
 
-				$('#vk7k-preset-summary-title').text('📦 Todo el Contenido Seguro Seleccionado');
-				$('#vk7k-preset-summary-details').html('Incluye: <strong>Entradas, páginas, productos WooCommerce, taxonomías, opciones y biblioteca multimedia</strong>.<br/>🔒 <em>Pedidos y usuarios quedan intactos y protegidos.</em>');
+				$('#vk7k-preset-summary-title').text('📦 Contenido, Menús y Diseño Seguro Seleccionado');
+				$('#vk7k-preset-summary-details').html('Incluye: <strong>Páginas, entradas, menús de navegación, cabeceras/plantillas FSE, opciones del tema y fotos (Uploads)</strong>.<br/>🔒 <em>Pedidos y usuarios quedan 100% protegidos e intactos.</em>');
 				$('#vk7k-advanced-panel').slideUp(200);
 				$('#vk7k-selected-preset-summary').slideDown(200);
 			} else if (type === 'custom_advanced') {
@@ -1000,11 +1024,14 @@
 		if (selectedSyncType === 'woocommerce_catalog') {
 			typeName = 'Catálogo de WooCommerce (Productos, Fotos y Categorías)';
 			typeIcon = '🛍️';
+		} else if (selectedSyncType === 'fse_design_menus') {
+			typeName = 'Diseño, Menús y Plantillas FSE (Quirúrgico sin tocar páginas ni pedidos)';
+			typeIcon = '🖌️';
 		} else if (selectedSyncType === 'design_theme') {
-			typeName = 'Tema y Archivos de Diseño (Sin Base de Datos)';
+			typeName = 'Solo Código y Archivos de Tema (Sin Base de Datos)';
 			typeIcon = '🎨';
 		} else if (selectedSyncType === 'full_content_safe') {
-			typeName = 'Todo el Contenido Seguro (Sin Usuarios ni Pedidos)';
+			typeName = 'Contenido, Menús y Diseño Seguro (Sin Usuarios ni Pedidos)';
 			typeIcon = '📦';
 		}
 
@@ -1014,10 +1041,20 @@
 			</div>
 		`);
 
+		// FSE item
+		if (selectedSyncType === 'fse_design_menus') {
+			$list.append(`
+				<div class="vk7k-summary-item">
+					<div class="vk7k-summary-head"><span class="dashicons dashicons-admin-appearance" style="color:#0d9488;"></span> <strong>Entidades FSE y Menús Granulares</strong></div>
+					<div class="vk7k-summary-desc">wp_navigation • nav_menu_item • wp_template_part • wp_template • wp_global_styles • wp_block • theme_mods • nav_menu_options (Páginas, posts y pedidos quedan 100% protegidos)</div>
+				</div>
+			`);
+		}
+
 		// DB item
 		if (syncDb) {
 			const dbDetails = [];
-			if (syncContent) dbDetails.push('Posts/Páginas');
+			if (syncContent) dbDetails.push('Posts/Páginas/Menús/Plantillas');
 			if (syncOptions) dbDetails.push('Opciones');
 			if (syncTaxonomies) dbDetails.push('Taxonomías');
 			if (syncWcOrders) dbDetails.push('<strong>Pedidos WooCommerce ✓</strong>');
@@ -1222,8 +1259,33 @@
 
 			if (shouldCancel) return;
 
-			// STEP 2: Database Sync
-			if (syncDb) {
+			// STEP 2: Database / FSE Sync
+			if (selectedSyncType === 'fse_design_menus') {
+				setStepActive('db');
+				log('Paso 2: Sincronizando quirúrgicamente diseño FSE (menús, cabeceras, plantillas, estilos y theme_mods)...', 'info');
+				setProgress(30, 'Sincronizando diseño FSE y menús');
+
+				const fseRes = await $.ajax({
+					url: vk7kSyncData.ajaxUrl,
+					type: 'POST',
+					data: {
+						action: 'vk7k_sync_fse_step',
+						nonce: vk7kSyncData.nonce,
+						mode: mode,
+						remote_url: remoteUrl,
+						secret_key: remoteKey,
+						remote_ip: remoteIp
+					}
+				});
+
+				if (!fseRes.success) {
+					throw new Error(getErrorMessage(fseRes) || 'Error sincronizando diseño FSE y menús.');
+				}
+
+				const fseData = fseRes.data;
+				log(`✓ FSE: ${fseData.message || 'Sincronización de diseño FSE completada con éxito.'}`, 'success');
+				setProgress(50, 'Diseño FSE y menús completados');
+			} else if (syncDb) {
 				setStepActive('db');
 				log('Paso 2: Obteniendo listado de tablas con filtros seleccionados...', 'info');
 				log(`Opciones DB: Contenido=${syncContent?'Sí':'No'}, Pedidos=${syncWcOrders?'Sí':'No'}, Usuarios=${syncUsers?'Sí':'No'}, Logs=${syncLogs?'Sí':'No'}`, 'info');

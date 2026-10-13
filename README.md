@@ -40,7 +40,7 @@ Plugin de sincronización y clonación de sitios WordPress (Push / Pull) desarro
      - Ir a **Uxcribe.cl > Sync**.
      - Seleccionar **Rol: Maestro**.
      - Copiar la **Clave Secreta Local**.
-     - Pegar la **URL del WordPress Remoto** (ej. `https://demo1.uxcribe.cl/cafu.cl`).
+     - Pegar la **URL del WordPress Remoto** (ej. `https://remoto.ejemplo.com`).
      - Pegar la **Clave Secreta del WordPress Remoto**.
      - *(Opcional)* Ingresar la **IP Directa del Servidor** (ej. `91.98.172.110`).
    - En el sitio de destino (ej. Staging):
@@ -95,4 +95,6 @@ A partir de la versión **1.3.0**, VK7K WP Sync incorpora un canal formal de dis
 4. **Novedades en v1.3.4**:
    - **Preset Optimizado «Tema y Archivos de Diseño»**: Sincronización diferencial ultra-rápida de archivos físicos del tema activo (PHP, CSS, plantillas HTML, assets y theme.json) con cero consultas/modificaciones a la Base de Datos.
 
-
+5. **Novedades en v1.4.1**:
+   - **Stream Binario Directo (`application/octet-stream`) en PUSH de Archivos**: Envío de paquetes ZIP en streaming binario sin conversión Base64, reduciendo a cero la sobrecarga de RAM y evitando el error HTTP 413 (*Request Entity Too Large*) provocado por las reglas de ModSecurity (`SecRequestBodyNoFilesLimit`) en servidores Apache/cPanel.
+   - **Ajuste Dinámico de Lotes ZIP**: Límite de seguridad de tamaño de lote de archivos a 10 MB para máxima estabilidad y prevención de timeouts en peticiones HTTP REST.

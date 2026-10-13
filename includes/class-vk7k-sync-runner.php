@@ -16,7 +16,7 @@ class VK7K_Sync_Runner {
 	/**
 	 * Send authenticated HTTP request to remote WordPress.
 	 */
-	public static function send_remote_request( $endpoint, $body = array(), $remote_url = '', $secret_key = '', $remote_ip = '' ) {
+	public static function send_remote_request( $endpoint, $body = array(), $remote_url = '', $secret_key = '', $remote_ip = '', $stream_to_file = '', $content_type = '' ) {
 		$settings = VK7K_Sync_Auth::get_settings();
 
 		if ( empty( $remote_url ) ) {
@@ -33,8 +33,8 @@ class VK7K_Sync_Runner {
 		$api_url    = $remote_url . '/index.php?rest_route=/vk7k-sync/v1/' . ltrim( $endpoint, '/' );
 
 		$headers = VK7K_Sync_Auth::generate_auth_headers( $endpoint, $body, $secret_key );
-		$headers['Content-Type'] = 'application/json; charset=utf-8';
-		$headers['Accept']       = 'application/json';
+		$headers['Content-Type'] = ! empty( $content_type ) ? $content_type : 'application/json; charset=utf-8';
+		$headers['Accept']       = ! empty( $stream_to_file ) ? 'application/zip, application/json' : 'application/json';
 
 		$curl_hook = null;
 		if ( ! empty( $remote_ip ) ) {
@@ -54,17 +54,21 @@ class VK7K_Sync_Runner {
 			}
 		}
 
-		$response = wp_remote_post(
-			$api_url,
-			array(
-				'timeout'     => 120,
-				'redirection' => 5,
-				'httpversion' => '1.1',
-				'headers'     => $headers,
-				'body'        => wp_json_encode( $body ),
-				'sslverify'   => false,
-			)
+		$request_args = array(
+			'timeout'     => 180,
+			'redirection' => 5,
+			'httpversion' => '1.1',
+			'headers'     => $headers,
+			'body'        => is_string( $body ) ? $body : wp_json_encode( $body ),
+			'sslverify'   => false,
 		);
+
+		if ( ! empty( $stream_to_file ) ) {
+			$request_args['stream']   = true;
+			$request_args['filename'] = $stream_to_file;
+		}
+
+		$response = wp_remote_post( $api_url, $request_args );
 
 		if ( $curl_hook ) {
 			remove_action( 'http_api_curl', $curl_hook, 10 );
@@ -75,6 +79,30 @@ class VK7K_Sync_Runner {
 		}
 
 		$code = wp_remote_retrieve_response_code( $response );
+
+		if ( ! empty( $stream_to_file ) ) {
+			if ( 200 !== $code ) {
+				$raw = file_exists( $stream_to_file ) ? (string) file_get_contents( $stream_to_file ) : '';
+				@unlink( $stream_to_file );
+				$data    = json_decode( $raw, true );
+				$err_msg = ! empty( $data['message'] ) ? $data['message'] : ( 'Error HTTP ' . $code . ': ' . substr( strip_tags( $raw ), 0, 300 ) );
+				return new WP_Error( 'vk7k_http_error_' . $code, $err_msg, array( 'status' => $code, 'raw' => $raw ) );
+			}
+
+			$content_type   = wp_remote_retrieve_header( $response, 'content-type' );
+			$included_count = (int) wp_remote_retrieve_header( $response, 'x-vk7k-included-count' );
+			$zip_size       = (int) wp_remote_retrieve_header( $response, 'x-vk7k-zip-size' );
+
+			return array(
+				'success'        => true,
+				'streamed'       => true,
+				'file_path'      => $stream_to_file,
+				'content_type'   => $content_type,
+				'included_count' => $included_count,
+				'zip_size'       => $zip_size ?: ( file_exists( $stream_to_file ) ? filesize( $stream_to_file ) : 0 ),
+			);
+		}
+
 		$raw  = wp_remote_retrieve_body( $response );
 		$data = json_decode( $raw, true );
 
@@ -116,10 +144,10 @@ class VK7K_Sync_Runner {
 		$min_post = min( $local_post, $remote_post, $local_upload, $remote_upload );
 		$min_mem  = min( $local_mem, $remote_mem );
 
-		$target_zip_bytes = (int) ( ( $min_post * 0.25 ) / 1.35 );
-		$zip_chunk_mb     = (int) max( 2, min( 12, round( $target_zip_bytes / ( 1024 * 1024 ) ) ) );
+		$target_zip_bytes = (int) ( $min_post * 0.40 );
+		$zip_chunk_mb     = (int) max( 4, min( 10, round( $target_zip_bytes / ( 1024 * 1024 ) ) ) );
 
-		$zip_files = ( $min_mem >= 268435456 ) ? 100 : 50;
+		$zip_files = ( $min_mem >= 268435456 ) ? 150 : 80;
 		$db_batch  = ( $min_mem >= 268435456 ) ? 1500 : 500;
 
 		return array(
@@ -140,6 +168,17 @@ class VK7K_Sync_Runner {
 		$res = self::send_remote_request( 'auth/test', array(), $remote_url, $secret_key, $remote_ip );
 		if ( ! is_wp_error( $res ) && is_array( $res ) ) {
 			$res['optimal_settings'] = self::get_optimal_batch_settings( $res );
+
+			// Capture detected content subdirectories from remote and local
+			$remote_subdirs        = isset( $res['detected_content_subdirs'] ) ? (array) $res['detected_content_subdirs'] : array();
+			$local_subdirs         = class_exists( 'VK7K_Sync_DB' ) ? VK7K_Sync_DB::detect_content_subdirectories() : array();
+			$res['remote_subdirs'] = $remote_subdirs;
+			$res['local_subdirs']  = $local_subdirs;
+
+			$rem_host = wp_parse_url( $remote_url, PHP_URL_HOST );
+			if ( ! empty( $rem_host ) && ! empty( $remote_subdirs ) ) {
+				set_transient( 'vk7k_sync_subdirs_' . md5( $rem_host ), $remote_subdirs, DAY_IN_SECONDS );
+			}
 
 			$remote_ver = $res['plugin_version'] ?? '1.0.0';
 			$local_ver  = defined( 'VK7K_SYNC_VERSION' ) ? VK7K_SYNC_VERSION : '1.0.0';
@@ -197,8 +236,17 @@ class VK7K_Sync_Runner {
 		// Options table rows are often heavy; adjust limit to prevent body limit timeouts
 		$effective_limit = ( false !== strpos( $table_name, 'options' ) ) ? min( (int) $limit, 250 ) : (int) $limit;
 
+		// Resolve detected or cached subdirectories for URL matrix
+		$rem_host       = wp_parse_url( $remote_url, PHP_URL_HOST );
+		$cached_subdirs = ( ! empty( $rem_host ) ) ? (array) get_transient( 'vk7k_sync_subdirs_' . md5( $rem_host ) ) : array();
+		$local_subdirs  = class_exists( 'VK7K_Sync_DB' ) ? VK7K_Sync_DB::detect_content_subdirectories() : array();
+
 		if ( 'push' === $mode ) {
-			$replacements = VK7K_Sync_Replacer::build_url_matrix( $local_url, $remote_url );
+			$matrix_options = array(
+				'source_subdirs' => $local_subdirs,
+				'target_subdirs' => $cached_subdirs,
+			);
+			$replacements = VK7K_Sync_Replacer::build_url_matrix( $local_url, $remote_url, $matrix_options );
 			$replacer     = new VK7K_Sync_Replacer( $replacements );
 
 			$chunk    = VK7K_Sync_DB::export_table_chunk( $table_name, $offset, $effective_limit, $replacer, '', $is_schema_only );
@@ -233,7 +281,11 @@ class VK7K_Sync_Runner {
 				'total_rows'  => $chunk['total_rows'] ?? 0,
 			);
 		} else {
-			$replacements = VK7K_Sync_Replacer::build_url_matrix( $remote_url, $local_url );
+			$matrix_options = array(
+				'source_subdirs' => $cached_subdirs,
+				'target_subdirs' => $local_subdirs,
+			);
+			$replacements = VK7K_Sync_Replacer::build_url_matrix( $remote_url, $local_url, $matrix_options );
 
 			$export_payload = array(
 				'table'          => $table_name,
@@ -274,6 +326,85 @@ class VK7K_Sync_Runner {
 				'is_done'     => $table_done && ( ( $table_idx + 1 ) >= count( $tables ) ),
 				'imported'    => count( $chunk['rows'] ?? array() ),
 				'total_rows'  => $chunk['total_rows'] ?? 0,
+			);
+		}
+	}
+
+	/**
+	 * Synchronize FSE design bundle (navigation, template parts, templates, global styles, theme_mods).
+	 *
+	 * @param array $params
+	 * @return array
+	 */
+	public static function step_sync_fse( $params ) {
+		$mode       = isset( $params['mode'] ) ? $params['mode'] : 'push';
+		$settings   = VK7K_Sync_Auth::get_settings();
+		$remote_url = ! empty( $params['remote_url'] ) ? $params['remote_url'] : $settings['remote_url'];
+		$secret_key = ! empty( $params['secret_key'] ) ? $params['secret_key'] : ( $settings['remote_secret_key'] ?? $settings['local_secret_key'] );
+		$remote_ip  = ! empty( $params['remote_ip'] ) ? $params['remote_ip'] : '';
+		$local_url  = untrailingslashit( home_url() );
+		$remote_url = untrailingslashit( $remote_url );
+
+		if ( 'push' === $mode ) {
+			// Export local FSE bundle with remote URL replacements
+			$bundle = VK7K_Sync_DB::export_fse_bundle( $local_url, $remote_url );
+
+			$res = self::send_remote_request(
+				'fse/import',
+				array(
+					'bundle'     => $bundle,
+					'source_url' => $local_url,
+					'target_url' => $remote_url,
+				),
+				$remote_url,
+				$secret_key,
+				$remote_ip
+			);
+
+			if ( is_wp_error( $res ) ) {
+				return array(
+					'success' => false,
+					'message' => 'Error enviando paquete FSE al destino: ' . $res->get_error_message(),
+				);
+			}
+
+			return array(
+				'success' => true,
+				'message' => 'Diseño FSE, menús y plantillas enviados e importados con éxito en el servidor receptor.',
+				'details' => $res,
+			);
+		} else {
+			// Pull: Request remote FSE bundle
+			$res = self::send_remote_request(
+				'fse/export',
+				array(
+					'source_url' => $remote_url,
+					'target_url' => $local_url,
+				),
+				$remote_url,
+				$secret_key,
+				$remote_ip
+			);
+
+			if ( is_wp_error( $res ) ) {
+				return array(
+					'success' => false,
+					'message' => 'Error trayendo paquete FSE desde el servidor remoto: ' . $res->get_error_message(),
+				);
+			}
+
+			$import_res = VK7K_Sync_DB::import_fse_bundle( $res, $remote_url, $local_url );
+			if ( empty( $import_res['success'] ) ) {
+				return array(
+					'success' => false,
+					'message' => 'Error importando diseño FSE localmente: ' . ( $import_res['message'] ?? '' ),
+				);
+			}
+
+			return array(
+				'success' => true,
+				'message' => 'Diseño FSE, menús y plantillas traídos e importados con éxito en este sitio local.',
+				'details' => $import_res,
 			);
 		}
 	}
@@ -370,21 +501,42 @@ class VK7K_Sync_Runner {
 				);
 			}
 
-			$zip_b64 = base64_encode( file_get_contents( $zip_res['zip_path'] ) );
+			$zip_raw = file_get_contents( $zip_res['zip_path'] );
 			@unlink( $zip_res['zip_path'] );
 
+			// Send direct binary stream (application/octet-stream) to avoid Base64 bloat and ModSecurity JSON body limits
 			$upload_res = self::send_remote_request(
 				'files/upload-chunk',
-				array( 'zip_base64' => $zip_b64 ),
+				$zip_raw,
 				$remote_url,
 				$secret_key,
-				$remote_ip
+				$remote_ip,
+				'',
+				'application/octet-stream'
 			);
+
+			// Fallback to Base64 JSON payload only if older remote host rejected binary body with 400
+			if ( is_wp_error( $upload_res ) && 400 === (int) $upload_res->get_error_data() ) {
+				$upload_res = self::send_remote_request(
+					'files/upload-chunk',
+					array( 'zip_base64' => base64_encode( $zip_raw ) ),
+					$remote_url,
+					$secret_key,
+					$remote_ip
+				);
+			}
 
 			if ( is_wp_error( $upload_res ) ) {
 				return array(
 					'success' => false,
 					'message' => 'Error subiendo lote de archivos: ' . $upload_res->get_error_message(),
+				);
+			}
+
+			if ( empty( $upload_res['success'] ) ) {
+				return array(
+					'success' => false,
+					'message' => ! empty( $upload_res['message'] ) ? $upload_res['message'] : 'Error extrayendo lote de archivos en el receptor.',
 				);
 			}
 
@@ -404,34 +556,70 @@ class VK7K_Sync_Runner {
 				'is_done'     => $is_done,
 			);
 		} else {
+			$temp_dir = VK7K_Sync_Files::get_temp_dir();
+			$temp_zip = $temp_dir . 'recv_' . uniqid() . '.zip';
+
 			$dl_res = self::send_remote_request(
 				'files/download-chunk',
-				array( 'files' => $slice, 'chunk_mb' => $chunk_mb ),
+				array(
+					'files'       => $slice,
+					'chunk_mb'    => $chunk_mb,
+					'chunk_files' => (int) ( $batch_settings['zip_files'] ?? 150 ),
+					'stream'      => true,
+				),
 				$remote_url,
 				$secret_key,
-				$remote_ip
+				$remote_ip,
+				$temp_zip
 			);
 
 			if ( is_wp_error( $dl_res ) ) {
+				@unlink( $temp_zip );
 				return array(
 					'success' => false,
 					'message' => 'Error descargando lote de archivos: ' . $dl_res->get_error_message(),
 				);
 			}
 
-			if ( ! empty( $dl_res['zip_base64'] ) ) {
-				$temp_dir = VK7K_Sync_Files::get_temp_dir();
-				$temp_zip = $temp_dir . 'recv_' . uniqid() . '.zip';
-				file_put_contents( $temp_zip, base64_decode( $dl_res['zip_base64'] ) );
-				VK7K_Sync_Files::extract_zip_chunk( $temp_zip );
+			$included_count = 0;
+
+			// 1. Direct binary streaming response
+			if ( is_array( $dl_res ) && ! empty( $dl_res['streamed'] ) ) {
+				if ( file_exists( $temp_zip ) && filesize( $temp_zip ) > 0 ) {
+					$content_type = $dl_res['content_type'] ?? '';
+					if ( false !== strpos( $content_type, 'zip' ) || false !== strpos( $content_type, 'octet-stream' ) ) {
+						VK7K_Sync_Files::extract_zip_chunk( $temp_zip );
+						$included_count = ! empty( $dl_res['included_count'] ) ? (int) $dl_res['included_count'] : count( $slice );
+					} else {
+						// Stream captured raw JSON (from older remote version returning base64)
+						$raw  = (string) file_get_contents( $temp_zip );
+						$json = json_decode( $raw, true );
+						if ( is_array( $json ) && ! empty( $json['zip_base64'] ) ) {
+							$decoded_zip = $temp_dir . 'decoded_' . uniqid() . '.zip';
+							file_put_contents( $decoded_zip, base64_decode( $json['zip_base64'] ) );
+							VK7K_Sync_Files::extract_zip_chunk( $decoded_zip );
+							@unlink( $decoded_zip );
+							$included_count = ! empty( $json['included_files'] ) ? count( $json['included_files'] ) : count( $slice );
+						} elseif ( is_array( $json ) && isset( $json['included_files'] ) ) {
+							$included_count = count( $json['included_files'] );
+						}
+					}
+					@unlink( $temp_zip );
+				}
+			} elseif ( is_array( $dl_res ) && ! empty( $dl_res['zip_base64'] ) ) {
+				// 2. Legacy non-streamed response
+				$legacy_zip = $temp_dir . 'recv_' . uniqid() . '.zip';
+				file_put_contents( $legacy_zip, base64_decode( $dl_res['zip_base64'] ) );
+				VK7K_Sync_Files::extract_zip_chunk( $legacy_zip );
+				@unlink( $legacy_zip );
+				$included_count = ! empty( $dl_res['included_files'] ) ? count( $dl_res['included_files'] ) : count( $slice );
 			}
 
-			$included_count = ! empty( $dl_res['included_files'] ) ? count( $dl_res['included_files'] ) : ( ! empty( $slice ) ? count( $slice ) : 0 );
 			if ( $included_count <= 0 && ! empty( $slice ) ) {
 				$included_count = 1;
 			}
-			$next_offset    = $offset + $included_count;
-			$is_done        = $next_offset >= $total;
+			$next_offset = $offset + $included_count;
+			$is_done     = $next_offset >= $total;
 
 			if ( $is_done ) {
 				VK7K_Sync_Files::clear_file_queue();
@@ -740,7 +928,8 @@ class VK7K_Sync_Runner {
 		}
 
 		if ( ! empty( $vault_json ) ) {
-			$zip->addFromString( '.vk7k_sync_vault.json', $vault_json );
+			$vault_filename = ( 0 === strpos( trim( $vault_json ), '<?php' ) ) ? '.vk7k_sync_vault.php' : '.vk7k_sync_vault.json';
+			$zip->addFromString( $vault_filename, $vault_json );
 		}
 
 		$plugin_files = self::get_deployable_plugin_files();
@@ -932,11 +1121,12 @@ class VK7K_Sync_Runner {
 			'            for ( $i = 0; $i < $zip->numFiles; $i++ ) {' . "\n" .
 			'                $filename = $zip->getNameIndex( $i );' . "\n" .
 			'                if ( false !== strpos( $filename, ".." ) ) continue;' . "\n" .
-			'                if ( ".vk7k_sync_vault.json" === $filename ) {' . "\n" .
+			'                if ( ".vk7k_sync_vault.json" === $filename || ".vk7k_sync_vault.php" === $filename ) {' . "\n" .
 			'                    $stream = $zip->getStream( $filename );' . "\n" .
 			'                    if ( $stream ) {' . "\n" .
-			'                        @file_put_contents( WP_CONTENT_DIR . "/.vk7k_sync_vault.json", stream_get_contents( $stream ) );' . "\n" .
-			'                        @file_put_contents( $target_dir . ".vk7k_sync_vault.json", stream_get_contents( $stream ) );' . "\n" .
+			'                        $v_dest = WP_CONTENT_DIR . "/" . $filename;' . "\n" .
+			'                        @file_put_contents( $v_dest, stream_get_contents( $stream ) );' . "\n" .
+			'                        @chmod( $v_dest, 0600 );' . "\n" .
 			'                        fclose( $stream );' . "\n" .
 			'                    }' . "\n" .
 			'                    continue;' . "\n" .
@@ -995,12 +1185,6 @@ class VK7K_Sync_Runner {
 			$ssh_config
 		);
 
-		// Try uploading directly to plugins folder if it already exists (non-blocking)
-		VK7K_Sync_Files::upload_buffer_via_sftp(
-			$vault_json,
-			'wp-content/plugins/vk7k-wp-sync/.vk7k_sync_vault.json',
-			$ssh_config
-		);
 
 		// If wp-content/.vk7k_sync_vault.json failed, report error
 		if ( empty( $vault_res1['success'] ) ) {
@@ -1377,14 +1561,34 @@ class VK7K_Sync_Runner {
 				);
 			}
 			$audit_report = isset( $res['audit'] ) ? $res['audit'] : array();
+			$remote_commit = isset( $res['commit'] ) ? $res['commit'] : null;
 		} else {
 			// In PULL mode, commit staged shadow tables atomically into active WordPress tables
 			VK7K_Sync_DB::commit_staged_tables( $local_url );
 
 			// Run deep link normalization and verification on local database
-			$matrix = VK7K_Sync_Replacer::build_url_matrix( $remote_url, $local_url );
+			$rem_host       = wp_parse_url( $remote_url, PHP_URL_HOST );
+			$cached_subdirs = ( ! empty( $rem_host ) ) ? (array) get_transient( 'vk7k_sync_subdirs_' . md5( $rem_host ) ) : array();
+			$local_subdirs  = class_exists( 'VK7K_Sync_DB' ) ? VK7K_Sync_DB::detect_content_subdirectories() : array();
+			$all_subdirs    = array_values( array_unique( array_merge( $cached_subdirs, $local_subdirs ) ) );
+
+			$matrix = VK7K_Sync_Replacer::build_url_matrix( $remote_url, $local_url, array(
+				'source_subdirs' => $all_subdirs,
+				'target_subdirs' => array(),
+			) );
 			if ( ! empty( $matrix ) ) {
 				VK7K_Sync_DB::deep_search_and_replace( $matrix );
+			}
+
+			// Local self-normalization in case local database has residual subdirectory URLs (e.g. local.test/wp26/... -> local.test/...)
+			if ( ! empty( $all_subdirs ) ) {
+				$norm_matrix = VK7K_Sync_Replacer::build_url_matrix( $local_url, $local_url, array(
+					'source_subdirs' => $all_subdirs,
+					'target_subdirs' => array(),
+				) );
+				if ( ! empty( $norm_matrix ) ) {
+					VK7K_Sync_DB::deep_search_and_replace( $norm_matrix );
+				}
 			}
 
 			// Ensure local siteurl and home are correct
@@ -1429,6 +1633,7 @@ class VK7K_Sync_Runner {
 			'message' => $msg,
 			'time'    => current_time( 'mysql' ),
 			'audit'   => $audit_report,
+			'commit'  => isset( $remote_commit ) ? $remote_commit : null,
 		);
 	}
 }

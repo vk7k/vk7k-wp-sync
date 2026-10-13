@@ -406,30 +406,44 @@ class VK7K_Sync_Admin {
 							<div class="vk7k-type-check-indicator"><span class="dashicons dashicons-yes-alt"></span></div>
 						</div>
 
-						<!-- Card 2: Design & Templates -->
+						<!-- Card 2: FSE Design & Menus -->
+						<div class="vk7k-sync-type-card is-recommended" data-type="fse_design_menus">
+							<div class="vk7k-type-badge-pill is-fse"><?php esc_html_e( 'FSE + Menús + Tema', 'vk7k-wp-sync' ); ?></div>
+							<div class="vk7k-type-icon">🖌️</div>
+							<h3 class="vk7k-type-title">
+								<span class="vk7k-verb"><?php echo 'slave' === $current_role ? esc_html__( 'Traer', 'vk7k-wp-sync' ) : esc_html__( 'Enviar', 'vk7k-wp-sync' ); ?></span>
+								<?php esc_html_e( 'Diseño, Menús y Plantillas FSE', 'vk7k-wp-sync' ); ?>
+							</h3>
+							<p class="vk7k-type-desc">
+								<?php esc_html_e( 'Sincroniza quirúrgicamente el tema en disco, menús de navegación, cabeceras/pies (wp_template_part), plantillas (wp_template), estilos globales y theme_mods. Cero impacto en páginas, posts ni pedidos.', 'vk7k-wp-sync' ); ?>
+							</p>
+							<div class="vk7k-type-check-indicator"><span class="dashicons dashicons-yes-alt"></span></div>
+						</div>
+
+						<!-- Card 3: Design & Templates (Disk Only) -->
 						<div class="vk7k-sync-type-card" data-type="design_theme">
-							<div class="vk7k-type-badge-pill"><?php esc_html_e( 'Solo Archivos de Tema', 'vk7k-wp-sync' ); ?></div>
+							<div class="vk7k-type-badge-pill"><?php esc_html_e( 'Solo Código de Tema', 'vk7k-wp-sync' ); ?></div>
 							<div class="vk7k-type-icon">🎨</div>
 							<h3 class="vk7k-type-title">
 								<span class="vk7k-verb"><?php echo 'slave' === $current_role ? esc_html__( 'Traer', 'vk7k-wp-sync' ) : esc_html__( 'Enviar', 'vk7k-wp-sync' ); ?></span>
-								<?php esc_html_e( 'Tema y Archivos de Diseño', 'vk7k-wp-sync' ); ?>
+								<?php esc_html_e( 'Solo Código y Archivos de Tema', 'vk7k-wp-sync' ); ?>
 							</h3>
 							<p class="vk7k-type-desc">
-								<?php esc_html_e( 'Sincroniza únicamente la carpeta del tema activo (archivos PHP, CSS, plantillas HTML, assets y theme.json). Cero impacto en Base de Datos.', 'vk7k-wp-sync' ); ?>
+								<?php esc_html_e( 'Sincroniza únicamente archivos físicos en disco (PHP, CSS, plantillas HTML originales, assets y theme.json). Cero impacto en Base de Datos (no incluye menús ni ajustes del sitio).', 'vk7k-wp-sync' ); ?>
 							</p>
 							<div class="vk7k-type-check-indicator"><span class="dashicons dashicons-yes-alt"></span></div>
 						</div>
 
 						<!-- Card 3: Full Safe Content -->
 						<div class="vk7k-sync-type-card" data-type="full_content_safe">
-							<div class="vk7k-type-badge-pill is-safe"><?php esc_html_e( 'Todo el Contenido Seguro', 'vk7k-wp-sync' ); ?></div>
+							<div class="vk7k-type-badge-pill is-safe"><?php esc_html_e( 'Contenido y Diseño Seguro', 'vk7k-wp-sync' ); ?></div>
 							<div class="vk7k-type-icon">📦</div>
 							<h3 class="vk7k-type-title">
 								<span class="vk7k-verb"><?php echo 'slave' === $current_role ? esc_html__( 'Traer', 'vk7k-wp-sync' ) : esc_html__( 'Enviar', 'vk7k-wp-sync' ); ?></span>
-								<?php esc_html_e( 'Todo el Contenido (Seguro)', 'vk7k-wp-sync' ); ?>
+								<?php esc_html_e( 'Contenido, Menús y Diseño (Seguro)', 'vk7k-wp-sync' ); ?>
 							</h3>
 							<p class="vk7k-type-desc">
-								<?php esc_html_e( 'Entradas, páginas, productos, taxonomías, opciones y biblioteca multimedia. Preserva clientes, pedidos y usuarios.', 'vk7k-wp-sync' ); ?>
+								<?php esc_html_e( 'Páginas, entradas, menús de navegación, cabeceras/plantillas FSE, opciones del tema y biblioteca multimedia. Preserva clientes, pedidos y usuarios.', 'vk7k-wp-sync' ); ?>
 							</p>
 							<div class="vk7k-type-check-indicator"><span class="dashicons dashicons-yes-alt"></span></div>
 						</div>
@@ -493,7 +507,7 @@ class VK7K_Sync_Admin {
 										<div class="vk7k-db-subgroup-options">
 											<label class="vk7k-sub-check">
 												<input type="checkbox" id="vk7k-opt-sync-content" checked />
-												<span><?php esc_html_e( 'Entradas, Páginas y CPTs (wp_posts, wp_postmeta)', 'vk7k-wp-sync' ); ?></span>
+												<span><?php esc_html_e( 'Entradas, Páginas, Menús y Plantillas (wp_posts, wp_postmeta)', 'vk7k-wp-sync' ); ?></span>
 											</label>
 											<label class="vk7k-sub-check">
 												<input type="checkbox" id="vk7k-opt-sync-options" checked />

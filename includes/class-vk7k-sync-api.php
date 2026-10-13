@@ -79,6 +79,27 @@ class VK7K_Sync_API {
 			)
 		);
 
+		// FSE & Navigation Routes
+		register_rest_route(
+			self::REST_NAMESPACE,
+			'/fse/export',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'handle_fse_export' ),
+				'permission_callback' => array( 'VK7K_Sync_Auth', 'verify_request' ),
+			)
+		);
+
+		register_rest_route(
+			self::REST_NAMESPACE,
+			'/fse/import',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'handle_fse_import' ),
+				'permission_callback' => array( 'VK7K_Sync_Auth', 'verify_request' ),
+			)
+		);
+
 		// Init / Handshake & Safe-Mode
 		register_rest_route(
 			self::REST_NAMESPACE,
@@ -330,21 +351,26 @@ class VK7K_Sync_API {
 		$memory_bytes     = self::parse_ini_bytes( ini_get( 'memory_limit' ) );
 		$max_exec         = (int) ini_get( 'max_execution_time' );
 
+		$upload_dir = wp_upload_dir();
+
 		return rest_ensure_response( array(
-			'success'          => true,
-			'site_name'        => get_bloginfo( 'name' ),
-			'site_url'         => site_url(),
-			'home_url'         => home_url(),
-			'wp_version'       => $wp_version,
-			'php_version'      => phpversion(),
-			'plugin_version'   => defined( 'VK7K_SYNC_VERSION' ) ? VK7K_SYNC_VERSION : '1.0.0',
-			'db_prefix'        => $wpdb->prefix,
-			'max_upload_size'  => $upload_max_bytes,
-			'post_max_size'    => $post_max_bytes,
-			'memory_limit'     => $memory_bytes,
-			'max_execution'    => $max_exec,
-			'server_time'      => current_time( 'mysql' ),
-			'timestamp'        => time(),
+			'success'                  => true,
+			'site_name'                => get_bloginfo( 'name' ),
+			'site_url'                 => site_url(),
+			'home_url'                 => home_url(),
+			'content_url'              => content_url(),
+			'upload_url'               => ! empty( $upload_dir['baseurl'] ) ? $upload_dir['baseurl'] : '',
+			'detected_content_subdirs' => class_exists( 'VK7K_Sync_DB' ) ? VK7K_Sync_DB::detect_content_subdirectories() : array(),
+			'wp_version'               => $wp_version,
+			'php_version'              => phpversion(),
+			'plugin_version'           => defined( 'VK7K_SYNC_VERSION' ) ? VK7K_SYNC_VERSION : '1.0.0',
+			'db_prefix'                => $wpdb->prefix,
+			'max_upload_size'          => $upload_max_bytes,
+			'post_max_size'            => $post_max_bytes,
+			'memory_limit'             => $memory_bytes,
+			'max_execution'            => $max_exec,
+			'server_time'              => current_time( 'mysql' ),
+			'timestamp'                => time(),
 		) );
 	}
 
@@ -422,6 +448,34 @@ class VK7K_Sync_API {
 	}
 
 	/**
+	 * Handle FSE export request.
+	 */
+	public static function handle_fse_export( $request ) {
+		$params     = $request->get_json_params();
+		$source_url = isset( $params['source_url'] ) ? esc_url_raw( $params['source_url'] ) : '';
+		$target_url = isset( $params['target_url'] ) ? esc_url_raw( $params['target_url'] ) : '';
+
+		$bundle = VK7K_Sync_DB::export_fse_bundle( $source_url, $target_url );
+		return rest_ensure_response( $bundle );
+	}
+
+	/**
+	 * Handle FSE import request.
+	 */
+	public static function handle_fse_import( $request ) {
+		$params     = $request->get_json_params();
+		$bundle     = isset( $params['bundle'] ) ? (array) $params['bundle'] : array();
+		$source_url = isset( $params['source_url'] ) ? esc_url_raw( $params['source_url'] ) : '';
+		$target_url = isset( $params['target_url'] ) ? esc_url_raw( $params['target_url'] ) : '';
+
+		$res = VK7K_Sync_DB::import_fse_bundle( $bundle, $source_url, $target_url );
+		if ( empty( $res['success'] ) ) {
+			return new WP_Error( 'vk7k_fse_import_error', $res['message'] ?? 'Error importando bundle FSE', array( 'status' => 500 ) );
+		}
+		return rest_ensure_response( $res );
+	}
+
+	/**
 	 * Return files manifest.
 	 */
 	public static function handle_files_manifest( $request ) {
@@ -438,11 +492,32 @@ class VK7K_Sync_API {
 	}
 
 	/**
-	 * Handle file upload chunk (ZIP payload).
+	 * Handle file upload chunk (ZIP payload or raw binary stream).
 	 */
 	public static function handle_files_upload_chunk( $request ) {
-		$params   = $request->get_json_params();
-		$zip_b64  = isset( $params['zip_base64'] ) ? $params['zip_base64'] : '';
+		$temp_dir = VK7K_Sync_Files::get_temp_dir();
+		$temp_zip = $temp_dir . 'recv_' . uniqid() . '.zip';
+
+		// Support direct binary upload stream (zero RAM Base64 overhead)
+		$content_type = isset( $_SERVER['CONTENT_TYPE'] ) ? $_SERVER['CONTENT_TYPE'] : '';
+		if ( false !== strpos( $content_type, 'application/zip' ) || false !== strpos( $content_type, 'application/octet-stream' ) ) {
+			$input = fopen( 'php://input', 'rb' );
+			$dest  = fopen( $temp_zip, 'wb' );
+			if ( $input && $dest ) {
+				stream_copy_to_stream( $input, $dest );
+				fclose( $input );
+				fclose( $dest );
+			}
+			if ( file_exists( $temp_zip ) && filesize( $temp_zip ) > 0 ) {
+				$result = VK7K_Sync_Files::extract_zip_chunk( $temp_zip );
+				@unlink( $temp_zip );
+				return rest_ensure_response( $result );
+			}
+		}
+
+		// Fallback to JSON Base64 payload
+		$params  = $request->get_json_params();
+		$zip_b64 = isset( $params['zip_base64'] ) ? $params['zip_base64'] : '';
 
 		if ( empty( $zip_b64 ) ) {
 			return new WP_Error( 'vk7k_missing_zip_data', 'No se recibieron datos de archivo ZIP', array( 'status' => 400 ) );
@@ -453,24 +528,65 @@ class VK7K_Sync_API {
 			return new WP_Error( 'vk7k_invalid_base64', 'Datos base64 corruptos', array( 'status' => 400 ) );
 		}
 
-		$temp_dir = VK7K_Sync_Files::get_temp_dir();
-		$temp_zip = $temp_dir . 'recv_' . uniqid() . '.zip';
 		file_put_contents( $temp_zip, $zip_raw );
-
 		$result = VK7K_Sync_Files::extract_zip_chunk( $temp_zip );
+		@unlink( $temp_zip );
 		return rest_ensure_response( $result );
 	}
 
 	/**
-	 * Handle file download chunk (create ZIP of requested files).
+	 * Handle file download chunk (create ZIP of requested files with optional zero-RAM streaming).
 	 */
 	public static function handle_files_download_chunk( $request ) {
 		$params    = $request->get_json_params();
 		$rel_files = isset( $params['files'] ) ? (array) $params['files'] : array();
-		$max_mb    = isset( $params['chunk_mb'] ) ? (int) $params['chunk_mb'] : 8;
+		$max_mb    = isset( $params['chunk_mb'] ) ? (int) $params['chunk_mb'] : 16;
+		$max_files = isset( $params['chunk_files'] ) ? (int) $params['chunk_files'] : 150;
+		$stream    = ! empty( $params['stream'] );
 
-		$chunk_res = VK7K_Sync_Files::create_zip_chunk( $rel_files, $max_mb * 1024 * 1024 );
+		$chunk_res = VK7K_Sync_Files::create_zip_chunk( $rel_files, $max_mb * 1024 * 1024, $max_files );
 
+		if ( $stream ) {
+			if ( empty( $chunk_res['success'] ) ) {
+				return rest_ensure_response( $chunk_res );
+			}
+
+			$zip_path = $chunk_res['zip_path'] ?? '';
+			if ( ! file_exists( $zip_path ) || 0 === filesize( $zip_path ) ) {
+				if ( file_exists( $zip_path ) ) {
+					@unlink( $zip_path );
+				}
+				return rest_ensure_response( array(
+					'success'         => true,
+					'included_files'  => array(),
+					'remaining_files' => $chunk_res['remaining_files'] ?? array(),
+					'zip_size'        => 0,
+				) );
+			}
+
+			$zip_size  = filesize( $zip_path );
+			$inc_count = ! empty( $chunk_res['included_files'] ) ? count( $chunk_res['included_files'] ) : 0;
+
+			// Direct binary streaming: flush buffers and read directly from disk to network
+			while ( ob_get_level() > 0 ) {
+				@ob_end_clean();
+			}
+
+			header( 'Content-Type: application/zip' );
+			header( 'Content-Disposition: attachment; filename="vk7k_chunk_' . uniqid() . '.zip"' );
+			header( 'Content-Length: ' . $zip_size );
+			header( 'X-VK7K-Included-Count: ' . $inc_count );
+			header( 'X-VK7K-Zip-Size: ' . $zip_size );
+			header( 'Cache-Control: no-cache, no-store, must-revalidate' );
+			header( 'Pragma: no-cache' );
+			header( 'Expires: 0' );
+
+			readfile( $zip_path );
+			@unlink( $zip_path );
+			exit;
+		}
+
+		// Fallback for non-streamed requests
 		if ( ! empty( $chunk_res['success'] ) && file_exists( $chunk_res['zip_path'] ) ) {
 			$chunk_res['zip_base64'] = base64_encode( file_get_contents( $chunk_res['zip_path'] ) );
 			@unlink( $chunk_res['zip_path'] );
@@ -511,7 +627,7 @@ class VK7K_Sync_API {
 		$deep_clean = ! empty( $params['deep_clean'] );
 
 		// 0. Commit staged shadow tables if any were imported
-		VK7K_Sync_DB::commit_staged_tables( $target_url );
+		$commit_result = VK7K_Sync_DB::commit_staged_tables( $target_url );
 
 		// 1. Run deep search & replace on remote tables if source and target provided
 		if ( $deep_clean && ! empty( $source_url ) && ! empty( $target_url ) ) {
@@ -559,6 +675,7 @@ class VK7K_Sync_API {
 			'site_url'  => site_url(),
 			'home_url'  => home_url(),
 			'audit'     => $audit_report,
+			'commit'    => $commit_result,
 		) );
 	}
 
@@ -683,6 +800,12 @@ class VK7K_Sync_API {
 
 		if ( function_exists( 'opcache_reset' ) ) {
 			@opcache_reset();
+		}
+
+		// Secure and migrate remote vault on update
+		if ( class_exists( 'VK7K_Sync_Auth' ) ) {
+			$settings = VK7K_Sync_Auth::get_settings();
+			VK7K_Sync_Auth::save_vault( $settings );
 		}
 
 		return rest_ensure_response( array(

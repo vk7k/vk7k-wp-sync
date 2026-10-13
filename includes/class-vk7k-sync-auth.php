@@ -18,17 +18,92 @@ class VK7K_Sync_Auth {
 	const UNLOCK_TRANSIENT_KEY   = 'vk7k_vault_unlocked_session';
 
 	/**
+	 * Get server-bound encryption key for disk vault persistence.
+	 * Bound to WordPress site salts so ciphertext cannot be decrypted outside this site.
+	 *
+	 * @return string
+	 */
+	private static function get_vault_crypto_key() {
+		$salt = defined( 'AUTH_KEY' ) ? AUTH_KEY : 'vk7k_default_vault_salt';
+		if ( function_exists( 'wp_salt' ) ) {
+			$salt .= wp_salt( 'auth' ) . wp_salt( 'secure_auth' );
+		}
+		return hash( 'sha256', $salt . '_vk7k_persistent_vault', true );
+	}
+
+	/**
+	 * Encrypt sensitive credential for disk vault storage.
+	 *
+	 * @param string $plaintext
+	 * @return string
+	 */
+	public static function encrypt_vault_secret( $plaintext ) {
+		if ( empty( $plaintext ) ) {
+			return '';
+		}
+		if ( 0 === strpos( $plaintext, 'vk7k_enc:' ) ) {
+			return $plaintext;
+		}
+		if ( ! function_exists( 'openssl_encrypt' ) ) {
+			return $plaintext;
+		}
+		$key    = self::get_vault_crypto_key();
+		$iv     = openssl_random_pseudo_bytes( 16 );
+		$cipher = openssl_encrypt( $plaintext, 'aes-256-cbc', $key, OPENSSL_RAW_DATA, $iv );
+		return 'vk7k_enc:' . base64_encode( $iv . $cipher );
+	}
+
+	/**
+	 * Decrypt sensitive credential from disk vault storage.
+	 *
+	 * @param string $encrypted
+	 * @return string
+	 */
+	public static function decrypt_vault_secret( $encrypted ) {
+		if ( empty( $encrypted ) ) {
+			return '';
+		}
+		if ( 0 !== strpos( $encrypted, 'vk7k_enc:' ) ) {
+			return $encrypted; // Legacy plaintext backwards compatibility
+		}
+		if ( ! function_exists( 'openssl_decrypt' ) ) {
+			return $encrypted;
+		}
+		$raw = base64_decode( substr( $encrypted, 9 ) );
+		if ( false === $raw || strlen( $raw ) < 17 ) {
+			return '';
+		}
+		$iv        = substr( $raw, 0, 16 );
+		$cipher    = substr( $raw, 16 );
+		$key       = self::get_vault_crypto_key();
+		$plaintext = openssl_decrypt( $cipher, 'aes-256-cbc', $key, OPENSSL_RAW_DATA, $iv );
+		return ( false !== $plaintext ) ? $plaintext : '';
+	}
+
+	/**
 	 * Get candidate persistent disk vault file paths.
+	 * Prefers protected PHP file format, with fallback to legacy JSON.
+	 * Strictly site-level: stored in WP_CONTENT_DIR (or uploads) so symlinked plugins never share or overwrite keys.
 	 *
 	 * @return array
 	 */
 	public static function get_vault_file_paths() {
-		$content_dir = defined( 'WP_CONTENT_DIR' ) ? WP_CONTENT_DIR : dirname( __DIR__, 2 );
-		$plugin_dir  = defined( 'VK7K_SYNC_PATH' ) ? VK7K_SYNC_PATH : dirname( __DIR__ );
-		return array(
-			trailingslashit( $content_dir ) . '.vk7k_sync_vault.json',
-			trailingslashit( $plugin_dir ) . '.vk7k_sync_vault.json',
-		);
+		$paths = array();
+
+		if ( defined( 'WP_CONTENT_DIR' ) ) {
+			$paths[] = trailingslashit( WP_CONTENT_DIR ) . '.vk7k_sync_vault.php';
+			$paths[] = trailingslashit( WP_CONTENT_DIR ) . '.vk7k_sync_vault.json';
+		}
+
+		if ( function_exists( 'wp_upload_dir' ) ) {
+			$upload_dir = wp_upload_dir();
+			if ( ! empty( $upload_dir['basedir'] ) ) {
+				$paths[] = trailingslashit( $upload_dir['basedir'] ) . '.vk7k_sync_vault.php';
+				$paths[] = trailingslashit( $upload_dir['basedir'] ) . '.vk7k_sync_vault.json';
+			}
+		}
+
+		return array_unique( $paths );
 	}
 
 	/**
@@ -47,14 +122,21 @@ class VK7K_Sync_Auth {
 	}
 
 	/**
-	 * Save persistent disk vault.
+	 * Save persistent disk vault with encrypted secrets and PHP execution denial.
 	 *
 	 * @param array $settings
+	 * @param bool  $skip_read
 	 * @return bool
 	 */
-	public static function save_vault( $settings ) {
+	public static function save_vault( $settings, $skip_read = false ) {
+		static $is_saving = false;
+		if ( $is_saving ) {
+			return false;
+		}
+		$is_saving = true;
+
 		$paths    = self::get_vault_file_paths();
-		$existing = self::get_vault();
+		$existing = ( ! $skip_read && ( empty( $settings['local_secret_key'] ) || empty( $settings['remote_url'] ) ) ) ? self::get_vault() : array();
 
 		$local_key  = ! empty( $settings['local_secret_key'] ) ? $settings['local_secret_key'] : ( $existing['local_secret_key'] ?? '' );
 		$remote_key = ! empty( $settings['remote_secret_key'] ) ? $settings['remote_secret_key'] : ( $existing['remote_secret_key'] ?? '' );
@@ -62,45 +144,95 @@ class VK7K_Sync_Auth {
 		$role       = ! empty( $settings['role'] ) ? $settings['role'] : ( $existing['role'] ?? 'master' );
 
 		if ( empty( $local_key ) && empty( $remote_key ) ) {
+			$is_saving = false;
 			return false; // Prevent wiping valid vault with empty data
 		}
 
+		// Encrypt credentials before persisting to disk
 		$vault_data = array(
-			'local_secret_key'  => $local_key,
-			'remote_secret_key' => $remote_key,
+			'local_secret_key'  => ! empty( $local_key ) ? self::encrypt_vault_secret( $local_key ) : '',
+			'remote_secret_key' => ! empty( $remote_key ) ? self::encrypt_vault_secret( $remote_key ) : '',
 			'remote_url'        => $remote_url,
 			'role'              => $role,
 			'updated_at'        => time(),
 		);
-		$json = wp_json_encode( $vault_data, JSON_PRETTY_PRINT );
+
+		// Format as self-protected PHP file (stops direct web disclosure)
+		$php_content = "<?php\n" .
+			"// VK7K Sync Security Vault - Direct web execution prohibited\n" .
+			"if ( ! defined( 'ABSPATH' ) ) { exit; }\n" .
+			"return " . var_export( $vault_data, true ) . ";\n";
 
 		$saved = false;
 		foreach ( $paths as $file ) {
-			if ( false !== @file_put_contents( $file, $json ) ) {
+			// Write PHP vault file
+			$target_file = ( substr( $file, -5 ) === '.json' ) ? substr( $file, 0, -5 ) . '.php' : $file;
+			if ( false !== @file_put_contents( $target_file, $php_content ) ) {
+				@chmod( $target_file, 0600 );
 				$saved = true;
+
+				// Purge legacy cleartext .json vault if present
+				$legacy_json = substr( $target_file, 0, -4 ) . '.json';
+				if ( file_exists( $legacy_json ) ) {
+					@unlink( $legacy_json );
+				}
+				break;
 			}
 		}
+
+		$is_saving = false;
 		return $saved;
 	}
 
 	/**
-	 * Read persistent disk vault.
+	 * Read persistent disk vault (supports both hardened PHP format and legacy JSON).
 	 *
 	 * @return array
 	 */
 	public static function get_vault() {
+		static $is_reading = false;
+		if ( $is_reading ) {
+			return array();
+		}
+		$is_reading = true;
+
 		$paths = self::get_vault_file_paths();
 		foreach ( $paths as $file ) {
 			if ( file_exists( $file ) ) {
-				$raw = @file_get_contents( $file );
-				if ( ! empty( $raw ) ) {
-					$data = json_decode( $raw, true );
-					if ( is_array( $data ) && ! empty( $data ) ) {
-						return $data;
+				$data = null;
+				if ( substr( $file, -4 ) === '.php' ) {
+					try {
+						$data = include $file;
+					} catch ( \Throwable $e ) {
+						$data = null;
 					}
+				} else {
+					$raw = @file_get_contents( $file );
+					if ( ! empty( $raw ) ) {
+						$data = json_decode( $raw, true );
+					}
+				}
+
+				if ( is_array( $data ) && ! empty( $data ) ) {
+					if ( ! empty( $data['local_secret_key'] ) ) {
+						$data['local_secret_key'] = self::decrypt_vault_secret( $data['local_secret_key'] );
+					}
+					if ( ! empty( $data['remote_secret_key'] ) ) {
+						$data['remote_secret_key'] = self::decrypt_vault_secret( $data['remote_secret_key'] );
+					}
+
+					// If legacy unencrypted .json vault was read, migrate to secured .php vault immediately
+					if ( substr( $file, -5 ) === '.json' ) {
+						self::save_vault( $data, true );
+					}
+
+					$is_reading = false;
+					return $data;
 				}
 			}
 		}
+
+		$is_reading = false;
 		return array();
 	}
 
@@ -630,10 +762,15 @@ class VK7K_Sync_Auth {
 	/**
 	 * Get site's local secret key.
 	 * Generates one if it doesn't exist yet.
+	 * Supports optional override via wp-config.php VK7K_SYNC_LOCAL_KEY constant.
 	 *
 	 * @return string
 	 */
 	public static function get_local_secret_key() {
+		if ( defined( 'VK7K_SYNC_LOCAL_KEY' ) && ! empty( VK7K_SYNC_LOCAL_KEY ) ) {
+			return (string) VK7K_SYNC_LOCAL_KEY;
+		}
+
 		$settings = self::get_settings();
 		if ( ! empty( $settings['local_secret_key'] ) ) {
 			return $settings['local_secret_key'];
@@ -720,6 +857,9 @@ class VK7K_Sync_Auth {
 		}
 		if ( ! empty( $saved['remote_secret_key'] ) ) {
 			$saved['remote_secret_key'] = self::decrypt( $saved['remote_secret_key'] );
+		}
+		if ( defined( 'VK7K_SYNC_REMOTE_KEY' ) && ! empty( VK7K_SYNC_REMOTE_KEY ) ) {
+			$saved['remote_secret_key'] = (string) VK7K_SYNC_REMOTE_KEY;
 		}
 
 		return wp_parse_args( $saved, $defaults );
