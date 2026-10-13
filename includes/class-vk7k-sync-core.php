@@ -79,6 +79,16 @@ class VK7K_Sync_Core {
 
 		// Manual deployment of plugin code to remote
 		add_action( 'wp_ajax_vk7k_sync_deploy_plugin_to_remote', array( $this, 'ajax_deploy_plugin_to_remote' ) );
+
+		// Recipes actions
+		add_action( 'wp_ajax_vk7k_sync_get_recipes', array( $this, 'ajax_get_recipes' ) );
+		add_action( 'wp_ajax_vk7k_sync_save_recipe', array( $this, 'ajax_save_recipe' ) );
+		add_action( 'wp_ajax_vk7k_sync_delete_recipe', array( $this, 'ajax_delete_recipe' ) );
+
+		// Granular sync actions
+		add_action( 'wp_ajax_vk7k_sync_granular_inspect', array( $this, 'ajax_granular_inspect' ) );
+		add_action( 'wp_ajax_vk7k_sync_granular_query', array( $this, 'ajax_granular_query' ) );
+		add_action( 'wp_ajax_vk7k_sync_granular_run', array( $this, 'ajax_granular_run' ) );
 	}
 
 	/**
@@ -802,6 +812,163 @@ class VK7K_Sync_Core {
 		wp_send_json_success( array(
 			'message'        => 'Plugin desplegado y actualizado con éxito en el servidor remoto a la versión ' . VK7K_SYNC_VERSION,
 			'plugin_version' => VK7K_SYNC_VERSION,
+		) );
+	}
+
+	/**
+	 * AJAX: Get all recipes.
+	 */
+	public function ajax_get_recipes() {
+		check_ajax_referer( 'vk7k_sync_admin_nonce', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'No autorizado.' ) );
+		}
+
+		$recipes = VK7K_Sync_Recipes::get_all();
+		wp_send_json_success( array( 'recipes' => array_values( $recipes ) ) );
+	}
+
+	/**
+	 * AJAX: Save a recipe.
+	 */
+	public function ajax_save_recipe() {
+		check_ajax_referer( 'vk7k_sync_admin_nonce', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'No autorizado.' ) );
+		}
+
+		$recipe_data = isset( $_POST['recipe'] ) ? (array) $_POST['recipe'] : array();
+		if ( empty( $recipe_data ) ) {
+			wp_send_json_error( array( 'message' => 'Datos de receta vacíos.' ) );
+		}
+
+		$saved = VK7K_Sync_Recipes::save_recipe( $recipe_data );
+		if ( is_wp_error( $saved ) ) {
+			wp_send_json_error( array( 'message' => $saved->get_error_message() ) );
+		}
+
+		wp_send_json_success( array(
+			'recipe'  => $saved,
+			'message' => 'Receta guardada y protegida en la bóveda con éxito.',
+		) );
+	}
+
+	/**
+	 * AJAX: Delete a recipe.
+	 */
+	public function ajax_delete_recipe() {
+		check_ajax_referer( 'vk7k_sync_admin_nonce', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'No autorizado.' ) );
+		}
+
+		$recipe_id = isset( $_POST['recipe_id'] ) ? sanitize_key( $_POST['recipe_id'] ) : '';
+		if ( empty( $recipe_id ) ) {
+			wp_send_json_error( array( 'message' => 'ID de receta inválido.' ) );
+		}
+
+		$del = VK7K_Sync_Recipes::delete_recipe( $recipe_id );
+		if ( is_wp_error( $del ) ) {
+			wp_send_json_error( array( 'message' => $del->get_error_message() ) );
+		}
+
+		wp_send_json_success( array( 'message' => 'Receta eliminada con éxito.' ) );
+	}
+
+	/**
+	 * AJAX: Inspect entities for granular modal.
+	 */
+	public function ajax_granular_inspect() {
+		check_ajax_referer( 'vk7k_sync_admin_nonce', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'No autorizado.' ) );
+		}
+
+		$data = VK7K_Sync_Granular::inspect_entities();
+		wp_send_json_success( $data );
+	}
+
+	/**
+	 * AJAX: Query items for a specific entity type/tab.
+	 */
+	public function ajax_granular_query() {
+		check_ajax_referer( 'vk7k_sync_admin_nonce', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'No autorizado.' ) );
+		}
+
+		$args = array(
+			'type'     => isset( $_POST['type'] ) ? sanitize_key( $_POST['type'] ) : 'page',
+			'taxonomy' => isset( $_POST['taxonomy'] ) ? sanitize_key( $_POST['taxonomy'] ) : '',
+			'search'   => isset( $_POST['search'] ) ? sanitize_text_field( $_POST['search'] ) : '',
+			'page'     => isset( $_POST['page'] ) ? (int) $_POST['page'] : 1,
+			'per_page' => isset( $_POST['per_page'] ) ? (int) $_POST['per_page'] : 25,
+		);
+
+		$result = VK7K_Sync_Granular::query_items( $args );
+		wp_send_json_success( $result );
+	}
+
+	/**
+	 * AJAX: Execute granular sync run (Push or Pull).
+	 */
+	public function ajax_granular_run() {
+		check_ajax_referer( 'vk7k_sync_admin_nonce', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'No autorizado.' ) );
+		}
+
+		$direction  = isset( $_POST['direction'] ) ? sanitize_key( $_POST['direction'] ) : 'push';
+		$selection  = isset( $_POST['selection'] ) ? (array) $_POST['selection'] : array();
+		$settings   = get_option( 'vk7k_sync_settings', array() );
+		$remote_url = ! empty( $settings['remote_url'] ) ? $settings['remote_url'] : '';
+		$secret_key = ! empty( $settings['remote_secret_key'] ) ? $settings['remote_secret_key'] : '';
+
+		if ( empty( $remote_url ) || empty( $secret_key ) ) {
+			wp_send_json_error( array( 'message' => 'Configuración de conexión remota incompleta.' ) );
+		}
+
+		// 1. Export package locally
+		$package = VK7K_Sync_Granular::export_package( $selection );
+
+		// 2. Send package to remote /granular/import endpoint
+		$response = VK7K_Sync_Runner::remote_post(
+			$remote_url,
+			'/granular/import',
+			array( 'package' => $package ),
+			$secret_key
+		);
+
+		if ( is_wp_error( $response ) ) {
+			wp_send_json_error( array( 'message' => $response->get_error_message() ) );
+		}
+
+		$body = json_decode( wp_remote_retrieve_body( $response ), true );
+		if ( empty( $body['success'] ) ) {
+			wp_send_json_error( array( 'message' => $body['message'] ?? 'Error en la sincronización granular remota.' ) );
+		}
+
+		// 3. If media was needed and requested, trigger media transfer
+		$media_synced = 0;
+		if ( ! empty( $selection['sync_media'] ) && ! empty( $package['media_files'] ) ) {
+			// Trigger file transfer for specific attachment relative paths
+			$rel_paths = wp_list_pluck( $package['media_files'], 'rel_path' );
+			$res_files = VK7K_Sync_Files::send_specific_files_to_remote( $remote_url, $secret_key, $rel_paths );
+			if ( ! is_wp_error( $res_files ) && ! empty( $res_files['uploaded'] ) ) {
+				$media_synced = (int) $res_files['uploaded'];
+			}
+		}
+
+		wp_send_json_success( array(
+			'message'        => sprintf(
+				'Sincronización granular exitosa: %d entradas, %d opciones, %d archivos de medios transferidos.',
+				$body['posts_synced'] ?? count( $package['posts'] ),
+				$body['options_synced'] ?? count( $package['options'] ),
+				$media_synced
+			),
+			'posts_synced'   => $body['posts_synced'] ?? count( $package['posts'] ),
+			'options_synced' => $body['options_synced'] ?? count( $package['options'] ),
+			'media_synced'   => $media_synced,
 		) );
 	}
 }

@@ -217,16 +217,21 @@ class VK7K_Sync_DB {
 		$current_settings = get_option( 'vk7k_sync_settings', array() );
 		$current_targets  = get_option( 'vk7k_sync_targets', array() );
 		$current_vault    = get_option( 'vk7k_sync_pin_vault', array() );
+		$current_recipes  = class_exists( 'VK7K_Sync_Recipes' ) ? VK7K_Sync_Recipes::get_all() : get_option( 'vk7k_sync_recipes', array() );
 		$active_plugins   = get_option( 'active_plugins', array() );
 
 		if ( ! empty( $current_settings ) && is_array( $current_settings ) && ! empty( $current_settings['local_secret_key'] ) ) {
 			VK7K_Sync_Auth::save_vault( $current_settings );
+		}
+		if ( class_exists( 'VK7K_Sync_Recipes' ) && ! empty( $current_recipes ) ) {
+			VK7K_Sync_Recipes::save_disk_recipes( $current_recipes );
 		}
 
 		$data = array(
 			'vk7k_sync_settings'  => $current_settings,
 			'vk7k_sync_targets'   => $current_targets,
 			'vk7k_sync_pin_vault' => $current_vault,
+			'vk7k_sync_recipes'   => $current_recipes,
 			'active_plugins'      => $active_plugins,
 		);
 
@@ -261,7 +266,7 @@ class VK7K_Sync_DB {
 			return false;
 		}
 
-		foreach ( array( 'vk7k_sync_settings', 'vk7k_sync_targets', 'vk7k_sync_pin_vault' ) as $opt_key ) {
+		foreach ( array( 'vk7k_sync_settings', 'vk7k_sync_targets', 'vk7k_sync_pin_vault', 'vk7k_sync_recipes' ) as $opt_key ) {
 			if ( ! empty( $data[ $opt_key ] ) ) {
 				$val     = $data[ $opt_key ];
 				$val_str = is_array( $val ) || is_object( $val ) ? serialize( $val ) : $val;
@@ -269,7 +274,7 @@ class VK7K_Sync_DB {
 				$wpdb->insert( $stage_table, array(
 					'option_name'  => $opt_key,
 					'option_value' => $val_str,
-					'autoload'     => 'yes',
+					'autoload'     => 'no',
 				) );
 			}
 		}
@@ -311,8 +316,8 @@ class VK7K_Sync_DB {
 		return (
 			0 === strpos( $opt_name, 'vk7k_sync_' ) ||
 			0 === strpos( $opt_name, '_vk7k_sync_' ) ||
-			0 === strpos( $opt_name, '_transient_vk7k_sync_' ) ||
-			0 === strpos( $opt_name, '_transient_timeout_vk7k_sync_' )
+			0 === strpos( $opt_name, '_transient_' ) ||
+			0 === strpos( $opt_name, '_site_transient_' )
 		);
 	}
 
@@ -594,19 +599,25 @@ class VK7K_Sync_DB {
 
 		$order_by = ! empty( $primary_key ) ? "ORDER BY `{$primary_key}` ASC" : "";
 		$rows = $wpdb->get_results( "SELECT * FROM `{$table_name}` {$order_by} LIMIT {$offset}, {$limit}", ARRAY_A );
-		$scanned_count = ! empty( $rows ) ? count( $rows ) : 0;
+		$is_options      = ( 0 === strcasecmp( $table_name, $wpdb->options ) || 0 === strcasecmp( $table_name, "{$wpdb->prefix}options" ) || 'wp_options' === strtolower( $table_name ) );
+		$max_chunk_bytes = 256 * 1024; // 256 KB max payload per chunk to prevent HTTP 413
+		$current_bytes   = 0;
+		$processed_rows  = array();
+		$scanned_count   = 0;
+		$stopped_early   = false;
 
-		$is_options = ( 0 === strcasecmp( $table_name, $wpdb->options ) || 0 === strcasecmp( $table_name, "{$wpdb->prefix}options" ) || 'wp_options' === strtolower( $table_name ) );
-		$processed_rows = array();
 		if ( ! empty( $rows ) ) {
 			foreach ( $rows as $row ) {
-				// Exclude internal sync settings and target profiles from export so destination identity and credentials are never overwritten
+				$scanned_count++;
+
+				// Exclude internal sync settings, target profiles and all transients from export
 				if ( $is_options && isset( $row['option_name'] ) ) {
 					if ( self::is_internal_option( $row['option_name'] ) ) {
 						continue;
 					}
 				}
 
+				$row_bytes     = 0;
 				$processed_row = array();
 				foreach ( $row as $col_key => $col_val ) {
 					if ( is_null( $col_val ) ) {
@@ -617,8 +628,18 @@ class VK7K_Sync_DB {
 						} else {
 							$processed_row[ $col_key ] = $col_val;
 						}
+						$row_bytes += strlen( (string) $processed_row[ $col_key ] );
 					}
 				}
+
+				// If this row would push us over 256KB and we already have at least 1 row, stop chunk early
+				if ( ! empty( $processed_rows ) && ( $current_bytes + $row_bytes ) > $max_chunk_bytes ) {
+					$scanned_count--; // Rewind offset so next chunk starts at this row
+					$stopped_early = true;
+					break;
+				}
+
+				$current_bytes   += $row_bytes;
 				$processed_rows[] = $processed_row;
 			}
 		}
@@ -630,6 +651,8 @@ class VK7K_Sync_DB {
 			}
 		}
 
+		$is_last = ! $stopped_early && ( ( $scanned_count < $limit ) || ( ( $offset + $scanned_count ) >= $total_rows ) );
+
 		return array(
 			'success'       => true,
 			'table'         => $table_name,
@@ -640,7 +663,7 @@ class VK7K_Sync_DB {
 			'offset'        => $offset,
 			'limit'         => $limit,
 			'total_rows'    => $total_rows,
-			'is_last_chunk' => ( $scanned_count < $limit ) || ( ( $offset + $scanned_count ) >= $total_rows ),
+			'is_last_chunk' => $is_last,
 		);
 	}
 

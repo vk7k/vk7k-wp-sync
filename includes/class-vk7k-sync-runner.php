@@ -449,6 +449,91 @@ class VK7K_Sync_Runner {
 		);
 	}
 
+	/**
+	 * Push a specific theme's files to remote and optionally activate it.
+	 *
+	 * @param string $theme_slug Folder slug of the theme (e.g. 'fusem-2026').
+	 * @param bool   $activate   Whether to activate the theme on remote after uploading.
+	 * @return array
+	 */
+	public static function push_theme( $theme_slug, $activate = true ) {
+		$theme_slug = sanitize_file_name( $theme_slug );
+		if ( empty( $theme_slug ) ) {
+			return array( 'success' => false, 'message' => 'Slug de tema inválido.' );
+		}
+
+		$prep = self::step_prepare_files(
+			array(
+				'mode'       => 'push',
+				'components' => array( 'themes' ),
+				'options'    => array(
+					'selected_themes' => array( $theme_slug ),
+				),
+			)
+		);
+
+		if ( empty( $prep['success'] ) ) {
+			return $prep;
+		}
+
+		$total_files = (int) ( $prep['total_files'] ?? 0 );
+		$transferred = 0;
+		$offset      = 0;
+
+		while ( $offset < $total_files ) {
+			$step = self::step_sync_files_chunk(
+				array(
+					'mode'     => 'push',
+					'offset'   => $offset,
+					'chunk_mb' => 8,
+				)
+			);
+			if ( empty( $step['success'] ) ) {
+				return $step;
+			}
+			$transferred += (int) ( $step['transferred'] ?? 0 );
+			$offset       = (int) ( $step['offset'] ?? ( $offset + 1 ) );
+			if ( ! empty( $step['is_done'] ) ) {
+				break;
+			}
+		}
+
+		$activation_res = null;
+		if ( $activate ) {
+			$theme_mods = get_theme_mods();
+
+			$activation_res = self::send_remote_request(
+				'themes/switch',
+				array(
+					'stylesheet' => $theme_slug,
+					'theme_mods' => is_array( $theme_mods ) ? $theme_mods : array(),
+				)
+			);
+			if ( is_wp_error( $activation_res ) ) {
+				return array(
+					'success'           => false,
+					'files_transferred' => $transferred,
+					'message'           => 'Archivos de tema enviados, pero falló la activación remota: ' . $activation_res->get_error_message(),
+				);
+			}
+		}
+
+		return array(
+			'success'           => true,
+			'theme_slug'        => $theme_slug,
+			'files_transferred' => $transferred,
+			'total_diff_files'  => $total_files,
+			'activated'         => $activate,
+			'remote_response'   => $activation_res,
+			'message'           => sprintf(
+				'Tema %s sincronizado (%d archivos transferidos)%s.',
+				$theme_slug,
+				$transferred,
+				$activate ? ' y activado en remoto' : ''
+			),
+		);
+	}
+
 	public static function step_sync_db( $params ) {
 		$mode       = isset( $params['mode'] ) ? $params['mode'] : 'push';
 		$tables     = isset( $params['tables'] ) ? (array) $params['tables'] : array();
@@ -482,7 +567,7 @@ class VK7K_Sync_Runner {
 		}
 
 		// Options table rows are often heavy; adjust limit to prevent body limit timeouts
-		$effective_limit = ( false !== strpos( $table_name, 'options' ) ) ? min( (int) $limit, 250 ) : (int) $limit;
+		$effective_limit = ( false !== strpos( $table_name, 'options' ) ) ? min( (int) $limit, 50 ) : (int) $limit;
 
 		// Resolve detected or cached subdirectories for URL matrix
 		$rem_host       = wp_parse_url( $remote_url, PHP_URL_HOST );

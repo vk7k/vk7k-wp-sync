@@ -130,6 +130,47 @@ class VK7K_Sync_API {
 			)
 		);
 
+		// Granular & Selective Sync Routes
+		register_rest_route(
+			self::REST_NAMESPACE,
+			'/granular/inspect',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'handle_granular_inspect' ),
+				'permission_callback' => array( 'VK7K_Sync_Auth', 'verify_request' ),
+			)
+		);
+
+		register_rest_route(
+			self::REST_NAMESPACE,
+			'/granular/query',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'handle_granular_query' ),
+				'permission_callback' => array( 'VK7K_Sync_Auth', 'verify_request' ),
+			)
+		);
+
+		register_rest_route(
+			self::REST_NAMESPACE,
+			'/granular/export',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'handle_granular_export' ),
+				'permission_callback' => array( 'VK7K_Sync_Auth', 'verify_request' ),
+			)
+		);
+
+		register_rest_route(
+			self::REST_NAMESPACE,
+			'/granular/import',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'handle_granular_import' ),
+				'permission_callback' => array( 'VK7K_Sync_Auth', 'verify_request' ),
+			)
+		);
+
 		// Init / Handshake & Safe-Mode
 		register_rest_route(
 			self::REST_NAMESPACE,
@@ -252,6 +293,27 @@ class VK7K_Sync_API {
 			array(
 				'methods'             => 'POST',
 				'callback'            => array( __CLASS__, 'handle_plugins_toggle' ),
+				'permission_callback' => array( 'VK7K_Sync_Auth', 'verify_request' ),
+			)
+		);
+
+		// Remote Themes Management routes
+		register_rest_route(
+			self::REST_NAMESPACE,
+			'/themes/list',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'handle_themes_list' ),
+				'permission_callback' => array( 'VK7K_Sync_Auth', 'verify_request' ),
+			)
+		);
+
+		register_rest_route(
+			self::REST_NAMESPACE,
+			'/themes/switch',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'handle_themes_switch' ),
 				'permission_callback' => array( 'VK7K_Sync_Auth', 'verify_request' ),
 			)
 		);
@@ -747,6 +809,110 @@ class VK7K_Sync_API {
 	}
 
 	/**
+	 * Inspect local entities for granular sync.
+	 */
+	public static function handle_granular_inspect( $request ) {
+		if ( ! class_exists( 'VK7K_Sync_Granular' ) ) {
+			return new WP_Error( 'vk7k_missing_class', 'Módulo granular no disponible.', array( 'status' => 500 ) );
+		}
+
+		$data = VK7K_Sync_Granular::inspect_entities();
+		return rest_ensure_response( array(
+			'success' => true,
+			'data'    => $data,
+		) );
+	}
+
+	/**
+	 * Query paginated items for granular sync modal.
+	 */
+	public static function handle_granular_query( $request ) {
+		if ( ! class_exists( 'VK7K_Sync_Granular' ) ) {
+			return new WP_Error( 'vk7k_missing_class', 'Módulo granular no disponible.', array( 'status' => 500 ) );
+		}
+
+		$params = $request->get_json_params();
+		$data   = VK7K_Sync_Granular::query_items( $params );
+
+		return rest_ensure_response( array(
+			'success' => true,
+			'data'    => $data,
+		) );
+	}
+
+	/**
+	 * Export selected granular entities package.
+	 */
+	public static function handle_granular_export( $request ) {
+		if ( ! class_exists( 'VK7K_Sync_Granular' ) ) {
+			return new WP_Error( 'vk7k_missing_class', 'Módulo granular no disponible.', array( 'status' => 500 ) );
+		}
+
+		$params  = $request->get_json_params();
+		$package = VK7K_Sync_Granular::export_package( $params );
+
+		return rest_ensure_response( array(
+			'success' => true,
+			'package' => $package,
+		) );
+	}
+
+	/**
+	 * Import granular package received from master or pull source.
+	 */
+	public static function handle_granular_import( $request ) {
+		$params  = $request->get_json_params();
+		$package = isset( $params['package'] ) && is_array( $params['package'] ) ? $params['package'] : $params;
+
+		if ( empty( $package ) || ! is_array( $package ) ) {
+			return new WP_Error( 'vk7k_invalid_package', 'Paquete de sincronización granular vacío.', array( 'status' => 400 ) );
+		}
+
+		// Forward posts payload to handle_db_push_posts
+		$posts_synced = 0;
+		if ( ! empty( $package['posts'] ) ) {
+			$sub_request = new WP_REST_Request( 'POST', '/' . self::REST_NAMESPACE . '/db/push-posts' );
+			$sub_request->set_header( 'content-type', 'application/json' );
+			$sub_request->set_body( wp_json_encode( array(
+				'source_url'         => $package['source_url'] ?? '',
+				'target_url'         => home_url(),
+				'posts'              => $package['posts'],
+				'postmeta'           => $package['postmeta'] ?? array(),
+				'term_relationships' => $package['term_relationships'] ?? array(),
+				'terms'              => $package['terms'] ?? array(),
+			) ) );
+			$res_posts = self::handle_db_push_posts( $sub_request );
+			if ( ! is_wp_error( $res_posts ) && isset( $res_posts->data['posts_synced'] ) ) {
+				$posts_synced = (int) $res_posts->data['posts_synced'];
+			}
+		}
+
+		// Forward options payload to handle_db_push_options
+		$options_synced = 0;
+		if ( ! empty( $package['options'] ) ) {
+			$sub_request = new WP_REST_Request( 'POST', '/' . self::REST_NAMESPACE . '/db/push-options' );
+			$sub_request->set_header( 'content-type', 'application/json' );
+			$sub_request->set_body( wp_json_encode( array(
+				'source_url' => $package['source_url'] ?? '',
+				'target_url' => home_url(),
+				'options'    => $package['options'],
+			) ) );
+			$res_opts = self::handle_db_push_options( $sub_request );
+			if ( ! is_wp_error( $res_opts ) && isset( $res_opts->data['options_count'] ) ) {
+				$options_synced = (int) $res_opts->data['options_count'];
+			}
+		}
+
+		return rest_ensure_response( array(
+			'success'        => true,
+			'posts_synced'   => $posts_synced,
+			'options_synced' => $options_synced,
+			'media_needed'   => ! empty( $package['media_files'] ) ? $package['media_files'] : array(),
+			'message'        => sprintf( 'Importación granular completada: %d entradas y %d opciones.', $posts_synced, $options_synced ),
+		) );
+	}
+
+	/**
 	 * Return files manifest.
 	 */
 	public static function handle_files_manifest( $request ) {
@@ -1188,6 +1354,57 @@ class VK7K_Sync_API {
 				'active_plugins' => $active_list,
 			) );
 		}
+	}
+
+	/**
+	 * Handle remote themes listing.
+	 */
+	public static function handle_themes_list( $request ) {
+		$themes = VK7K_Sync_Files::get_available_themes();
+		return rest_ensure_response( array(
+			'success'      => true,
+			'themes'       => $themes,
+			'active_theme' => get_stylesheet(),
+		) );
+	}
+
+	/**
+	 * Handle remote theme switching/activation.
+	 */
+	public static function handle_themes_switch( $request ) {
+		$params     = $request->get_json_params();
+		$stylesheet = isset( $params['stylesheet'] ) ? sanitize_text_field( $params['stylesheet'] ) : '';
+		$theme_mods = isset( $params['theme_mods'] ) && is_array( $params['theme_mods'] ) ? $params['theme_mods'] : null;
+
+		if ( empty( $stylesheet ) ) {
+			return new WP_Error( 'vk7k_missing_theme', 'Se requiere el stylesheet del tema.', array( 'status' => 400 ) );
+		}
+
+		$theme = wp_get_theme( $stylesheet );
+		if ( ! $theme->exists() ) {
+			return new WP_Error( 'vk7k_invalid_theme', "El tema '{$stylesheet}' no existe en el servidor remoto.", array( 'status' => 404 ) );
+		}
+
+		switch_theme( $stylesheet );
+
+		if ( ! empty( $theme_mods ) ) {
+			foreach ( $theme_mods as $mod_key => $mod_val ) {
+				set_theme_mod( $mod_key, $mod_val );
+			}
+		}
+
+		wp_cache_flush();
+		flush_rewrite_rules( true );
+
+		return rest_ensure_response( array(
+			'success'         => true,
+			'message'         => "Tema '{$theme->get( 'Name' )}' ({$stylesheet}) activado con éxito en remoto.",
+			'active_theme'    => get_stylesheet(),
+			'active_template' => get_template(),
+			'theme_name'      => $theme->get( 'Name' ),
+			'is_child'        => (bool) $theme->parent(),
+			'parent_theme'    => $theme->parent() ? $theme->parent()->get_stylesheet() : '',
+		) );
 	}
 }
 

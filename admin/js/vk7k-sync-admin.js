@@ -29,6 +29,7 @@
 		initLinkTools();
 		initRemotePathScanner();
 		initPathSelectionModalEvents();
+		initGranularAndRecipes();
 
 		// Auto check connection after 5 seconds to prevent rate-limiting and multiple connections on page refresh
 		initialCheckTimer = setTimeout(runInitialConnectionCheck, 5000);
@@ -2106,4 +2107,398 @@
 		$('#vk7k-audit-result-box').html(html).slideDown(200);
 	}
 
+	/**
+	 * Granular DataGrid & Recipe Engine
+	 */
+	function initGranularAndRecipes() {
+		let currentTab = 'pages';
+		let currentPage = 1;
+		let currentSearch = '';
+		let currentCpt = 'post';
+		let availablePostTypes = [];
+		let currentSelection = {
+			posts: [],
+			menus: [],
+			taxonomies: [],
+			terms: [],
+			options: [],
+			sync_media: true
+		};
+
+		// 1. Load available saved recipes into dropdown
+		loadSavedRecipes();
+
+		// 2. Open Granular Lightbox Modal
+		$('.vk7k-btn-open-granular-modal').on('click', function(e) {
+			e.preventDefault();
+			$('#vk7k-granular-modal').fadeIn(200);
+			inspectEntities();
+			fetchGridData();
+		});
+
+		// Close modal
+		$('#vk7k-granular-modal .vk7k-modal-close-btn, #vk7k-granular-modal .vk7k-modal-close-action').on('click', function() {
+			$('#vk7k-granular-modal').fadeOut(200);
+		});
+
+		// 3. Tab switching
+		$('.vk7k-granular-tabs .vk7k-tab-btn').on('click', function() {
+			$('.vk7k-granular-tabs .vk7k-tab-btn').removeClass('is-active');
+			$(this).addClass('is-active');
+			currentTab = $(this).data('tab');
+			currentPage = 1;
+			currentSearch = '';
+			$('#vk7k-grid-search').val('');
+
+			if (currentTab === 'cpts') {
+				$('#vk7k-cpt-filter-select').show();
+			} else {
+				$('#vk7k-cpt-filter-select').hide();
+			}
+
+			fetchGridData();
+		});
+
+		// CPT sub-filter change
+		$('#vk7k-cpt-filter-select').on('change', function() {
+			currentCpt = $(this).val();
+			currentPage = 1;
+			fetchGridData();
+		});
+
+		// Search input with debounce
+		let searchTimer = null;
+		$('#vk7k-grid-search').on('input', function() {
+			clearTimeout(searchTimer);
+			const val = $(this).val().trim();
+			searchTimer = setTimeout(function() {
+				currentSearch = val;
+				currentPage = 1;
+				fetchGridData();
+			}, 300);
+		});
+
+		// Pagination controls
+		$('#vk7k-grid-prev-page').on('click', function() {
+			if (currentPage > 1) {
+				currentPage--;
+				fetchGridData();
+			}
+		});
+
+		$('#vk7k-grid-next-page').on('click', function() {
+			currentPage++;
+			fetchGridData();
+		});
+
+		// Select All Checkbox
+		$('#vk7k-grid-select-all').on('change', function() {
+			const checked = $(this).is(':checked');
+			$('#vk7k-grid-tbody .vk7k-row-checkbox').each(function() {
+				const id = $(this).val();
+				$(this).prop('checked', checked);
+				toggleSelectionItem(currentTab, id, checked);
+			});
+			updateSelectedBadge();
+		});
+
+		// Individual Row Checkbox change (delegated)
+		$('#vk7k-grid-tbody').on('change', '.vk7k-row-checkbox', function() {
+			const id = $(this).val();
+			const checked = $(this).is(':checked');
+			toggleSelectionItem(currentTab, id, checked);
+			updateSelectedBadge();
+		});
+
+		// Clear all selections
+		$('#vk7k-btn-clear-selection').on('click', function(e) {
+			e.preventDefault();
+			currentSelection = {
+				posts: [],
+				menus: [],
+				taxonomies: [],
+				terms: [],
+				options: [],
+				sync_media: $('#vk7k-chk-include-media').is(':checked')
+			};
+			$('#vk7k-grid-tbody .vk7k-row-checkbox').prop('checked', false);
+			$('#vk7k-grid-select-all').prop('checked', false);
+			updateSelectedBadge();
+		});
+
+		$('#vk7k-chk-include-media').on('change', function() {
+			currentSelection.sync_media = $(this).is(':checked');
+		});
+
+		// Save as Recipe trigger
+		$('#vk7k-btn-save-as-recipe, #vk7k-btn-save-current-recipe').on('click', function(e) {
+			e.preventDefault();
+			$('#vk7k-recipe-input-name').val('');
+			$('#vk7k-recipe-input-desc').val('');
+			$('#vk7k-save-recipe-modal').fadeIn(200);
+		});
+
+		$('#vk7k-save-recipe-modal .vk7k-modal-close-btn, #vk7k-save-recipe-modal .vk7k-modal-close-action').on('click', function() {
+			$('#vk7k-save-recipe-modal').fadeOut(200);
+		});
+
+		// Handle Save Recipe Form Submit
+		$('#vk7k-recipe-save-form').on('submit', function(e) {
+			e.preventDefault();
+			const name = $('#vk7k-recipe-input-name').val().trim();
+			const desc = $('#vk7k-recipe-input-desc').val().trim();
+			if (!name) return;
+
+			const recipePayload = {
+				name: name,
+				description: desc,
+				direction: 'push',
+				entities: currentSelection,
+				sync_media: currentSelection.sync_media
+			};
+
+			$.post(vk7kSyncData.ajaxUrl, {
+				action: 'vk7k_sync_save_recipe',
+				nonce: vk7kSyncData.nonce,
+				recipe: recipePayload
+			}, function(res) {
+				if (res.success && res.data) {
+					$('#vk7k-save-recipe-modal').fadeOut(200);
+					loadSavedRecipes(res.data.recipe.id);
+					alert('✅ Receta guardada y protegida en la bóveda con éxito.');
+				} else {
+					alert('❌ Error al guardar receta: ' + getErrorMessage(res));
+				}
+			});
+		});
+
+		// Recipe dropdown change
+		$('#vk7k-select-saved-recipes').on('change', function() {
+			const id = $(this).val();
+			if (!id) {
+				$('#vk7k-active-recipe-name').text('Ninguna seleccionada (modo libre)');
+				$('#vk7k-btn-save-current-recipe').hide();
+				return;
+			}
+
+			const recipe = $(this).find(':selected').data('recipe');
+			if (recipe && recipe.entities) {
+				currentSelection = $.extend(true, {
+					posts: [],
+					menus: [],
+					taxonomies: [],
+					terms: [],
+					options: [],
+					sync_media: true
+				}, recipe.entities);
+				currentSelection.sync_media = typeof recipe.sync_media !== 'undefined' ? !!recipe.sync_media : true;
+				$('#vk7k-chk-include-media').prop('checked', currentSelection.sync_media);
+				$('#vk7k-active-recipe-name').text(recipe.name + ' (' + (recipe.description || 'personalizada') + ')');
+				$('#vk7k-btn-save-current-recipe').show();
+				updateSelectedBadge();
+				fetchGridData();
+			}
+		});
+
+		// Run Granular Sync Now Button
+		$('#vk7k-btn-run-granular-sync').on('click', function(e) {
+			e.preventDefault();
+			const total = (currentSelection.posts.length + currentSelection.menus.length + currentSelection.options.length);
+			if (total === 0) {
+				alert('Selecciona al menos una entidad (página, entrada, menú u opción) para sincronizar.');
+				return;
+			}
+
+			if (!confirm('¿Deseas ejecutar la sincronización granular de los ' + total + ' elementos seleccionados hacia el servidor remoto?')) {
+				return;
+			}
+
+			const $btn = $(this);
+			const origHtml = $btn.html();
+			$btn.prop('disabled', true).html('<span class="spinner is-active" style="float:none; margin:0 6px 0 0;"></span> Sincronizando en remoto...');
+
+			$.post(vk7kSyncData.ajaxUrl, {
+				action: 'vk7k_sync_granular_run',
+				nonce: vk7kSyncData.nonce,
+				direction: 'push',
+				selection: currentSelection
+			}, function(res) {
+				$btn.prop('disabled', false).html(origHtml);
+				if (res.success && res.data) {
+					alert('🎉 ' + res.data.message);
+					$('#vk7k-granular-modal').fadeOut(200);
+				} else {
+					alert('❌ Error: ' + getErrorMessage(res));
+				}
+			}).fail(function(err) {
+				$btn.prop('disabled', false).html(origHtml);
+				alert('❌ Error de comunicación: ' + getErrorMessage(err));
+			});
+		});
+
+		function inspectEntities() {
+			$.post(vk7kSyncData.ajaxUrl, {
+				action: 'vk7k_sync_granular_inspect',
+				nonce: vk7kSyncData.nonce
+			}, function(res) {
+				if (res.success && res.data) {
+					availablePostTypes = res.data.post_types || [];
+					let cptOpts = '';
+					availablePostTypes.forEach(function(pt) {
+						cptOpts += '<option value="' + pt.name + '">' + escapeHtml(pt.label) + ' (' + pt.count + ')</option>';
+					});
+					$('#vk7k-cpt-filter-select').html(cptOpts);
+				}
+			});
+		}
+
+		function fetchGridData() {
+			$('#vk7k-grid-tbody').html('<tr><td colspan="6" style="text-align: center; padding: 30px;"><span class="spinner is-active" style="float:none; margin: 0 auto 10px;"></span><p>Cargando datos...</p></td></tr>');
+
+			let queryType = currentTab;
+			let queryTax = '';
+			if (currentTab === 'pages') queryType = 'page';
+			if (currentTab === 'cpts') queryType = currentCpt;
+			if (currentTab === 'menus') queryType = 'nav_menu_item';
+
+			$.post(vk7kSyncData.ajaxUrl, {
+				action: 'vk7k_sync_granular_query',
+				nonce: vk7kSyncData.nonce,
+				type: queryType,
+				taxonomy: queryTax,
+				search: currentSearch,
+				page: currentPage,
+				per_page: 25
+			}, function(res) {
+				if (res.success && res.data) {
+					renderGridTable(res.data);
+				} else {
+					$('#vk7k-grid-tbody').html('<tr><td colspan="6" style="text-align:center; color:#ef4444; padding:20px;">Error al cargar elementos: ' + getErrorMessage(res) + '</td></tr>');
+				}
+			}).fail(function(err) {
+				$('#vk7k-grid-tbody').html('<tr><td colspan="6" style="text-align:center; color:#ef4444; padding:20px;">Error de comunicación.</td></tr>');
+			});
+		}
+
+		function renderGridTable(data) {
+			const items = data.items || [];
+			const total = data.total || 0;
+			const page = data.page || 1;
+			const pages = data.pages || 1;
+
+			$('#vk7k-grid-current-page').text(page + ' / ' + pages);
+			$('#vk7k-grid-pagination-info').text('Mostrando ' + items.length + ' de ' + total + ' registros');
+			$('#vk7k-grid-prev-page').prop('disabled', page <= 1);
+			$('#vk7k-grid-next-page').prop('disabled', page >= pages);
+
+			if (items.length === 0) {
+				$('#vk7k-grid-tbody').html('<tr><td colspan="6" style="text-align:center; padding:30px; color:#64748b;">No se encontraron elementos coincidentes.</td></tr>');
+				return;
+			}
+
+			let html = '';
+			items.forEach(function(item) {
+				const isChecked = isItemSelected(currentTab, item.id);
+				const rowClass = isChecked ? 'is-selected' : '';
+
+				html += '<tr class="' + rowClass + '">';
+				html += '<td style="text-align: center;"><input type="checkbox" class="vk7k-row-checkbox" value="' + item.id + '" ' + (isChecked ? 'checked' : '') + ' /></td>';
+				html += '<td><code>#' + item.id + '</code></td>';
+				
+				// Title & Thumbnail
+				html += '<td>';
+				if (item.thumb_url) {
+					html += '<img src="' + item.thumb_url + '" class="vk7k-grid-thumb" />';
+				}
+				html += '<strong>' + escapeHtml(item.title || item.name) + '</strong>';
+				if (item.preview) {
+					html += '<div style="font-size:0.75rem; color:#64748b; font-family:monospace;">' + escapeHtml(item.preview) + '</div>';
+				}
+				html += '</td>';
+
+				// Slug
+				html += '<td><code>' + escapeHtml(item.slug || item.id) + '</code></td>';
+
+				// Status
+				html += '<td>';
+				if (item.status) {
+					html += '<span class="vk7k-status-badge ' + (item.status === 'publish' ? 'publish' : 'draft') + '">' + item.status + '</span>';
+				} else if (item.autoload) {
+					html += '<span class="vk7k-status-badge other">' + item.autoload + '</span>';
+				} else {
+					html += '-';
+				}
+				html += '</td>';
+
+				// Date modified
+				html += '<td style="font-size:0.8rem; color:#64748b;">' + (item.modified || item.date || '-') + '</td>';
+				html += '</tr>';
+			});
+
+			$('#vk7k-grid-tbody').html(html);
+		}
+
+		function isItemSelected(tab, id) {
+			id = parseInt(id) || id;
+			if (tab === 'pages' || tab === 'cpts') return currentSelection.posts.indexOf(id) !== -1;
+			if (tab === 'menus') return currentSelection.menus.indexOf(id) !== -1;
+			if (tab === 'options') return currentSelection.options.indexOf(String(id)) !== -1;
+			if (tab === 'taxonomies') return currentSelection.terms.indexOf(id) !== -1;
+			return false;
+		}
+
+		function toggleSelectionItem(tab, id, checked) {
+			const intId = parseInt(id) || id;
+			let list = [];
+			if (tab === 'pages' || tab === 'cpts') list = currentSelection.posts;
+			if (tab === 'menus') list = currentSelection.menus;
+			if (tab === 'options') list = currentSelection.options;
+			if (tab === 'taxonomies') list = currentSelection.terms;
+
+			const idx = list.indexOf(intId);
+			if (checked && idx === -1) {
+				list.push(intId);
+			} else if (!checked && idx !== -1) {
+				list.splice(idx, 1);
+			}
+		}
+
+		function updateSelectedBadge() {
+			const pCount = currentSelection.posts.length;
+			const mCount = currentSelection.menus.length;
+			const oCount = currentSelection.options.length;
+			const total = pCount + mCount + oCount;
+
+			$('#vk7k-total-selected-count').text(total);
+			$('#count-pages').text(pCount);
+			$('#count-cpts').text(pCount);
+			$('#count-menus').text(mCount);
+			$('#count-options').text(oCount);
+
+			$('#vk7k-selected-breakdown').text('(' + pCount + ' posts/páginas, ' + mCount + ' menús, ' + oCount + ' opciones)');
+		}
+
+		function loadSavedRecipes(selectedId) {
+			$.post(vk7kSyncData.ajaxUrl, {
+				action: 'vk7k_sync_get_recipes',
+				nonce: vk7kSyncData.nonce
+			}, function(res) {
+				if (res.success && res.data && res.data.recipes) {
+					let opts = '<option value="">— Cargar Receta Guardada —</option>';
+					res.data.recipes.forEach(function(rec) {
+						opts += '<option value="' + rec.id + '" ' + (selectedId === rec.id ? 'selected' : '') + '>' + escapeHtml(rec.name) + '</option>';
+					});
+					$('#vk7k-select-saved-recipes').html(opts);
+					res.data.recipes.forEach(function(rec) {
+						$('#vk7k-select-saved-recipes option[value="' + rec.id + '"]').data('recipe', rec);
+					});
+					if (selectedId) {
+						$('#vk7k-select-saved-recipes').val(selectedId).trigger('change');
+					}
+				}
+			});
+		}
+	}
+
 })(jQuery);
+

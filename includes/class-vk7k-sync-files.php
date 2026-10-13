@@ -253,8 +253,11 @@ class VK7K_Sync_Files {
 					$p_dir = $plugin_root . '/' . sanitize_file_name( $plugin_slug );
 					if ( is_dir( $p_dir ) ) {
 						$paths_to_scan['plugins'][] = $p_dir;
+					} elseif ( is_file( $p_dir ) ) {
+						// Single file plugin with .php extension
+						$paths_to_scan['plugins'][] = $p_dir;
 					} elseif ( is_file( $p_dir . '.php' ) ) {
-						// Single file plugin
+						// Single file plugin without .php extension
 						$paths_to_scan['plugins'][] = $p_dir . '.php';
 					}
 				}
@@ -840,5 +843,73 @@ class VK7K_Sync_Files {
 				}
 			}
 		}
+	}
+
+	/**
+	 * Package and send a specific list of relative files (e.g. attachments) to remote.
+	 *
+	 * @param string $remote_url
+	 * @param string $secret_key
+	 * @param array  $rel_paths Array of relative paths under uploads/
+	 * @return array|WP_Error
+	 */
+	public static function send_specific_files_to_remote( $remote_url, $secret_key, $rel_paths ) {
+		if ( empty( $rel_paths ) || ! class_exists( 'ZipArchive' ) ) {
+			return array( 'uploaded' => 0 );
+		}
+
+		$upload_dir = wp_upload_dir();
+		$basedir    = trailingslashit( wp_normalize_path( $upload_dir['basedir'] ) );
+		$temp_dir   = self::get_temp_dir();
+		$zip_file   = $temp_dir . 'granular_media_' . time() . '.zip';
+
+		$zip = new ZipArchive();
+		if ( true !== $zip->open( $zip_file, ZipArchive::CREATE | ZipArchive::OVERWRITE ) ) {
+			return new WP_Error( 'zip_create_failed', 'No se pudo crear archivo ZIP para medios granulares.' );
+		}
+
+		$added = 0;
+		foreach ( $rel_paths as $rel ) {
+			$abs = $basedir . ltrim( $rel, '/' );
+			if ( file_exists( $abs ) && is_readable( $abs ) ) {
+				$zip->addFile( $abs, 'uploads/' . ltrim( $rel, '/' ) );
+				$added++;
+			}
+		}
+
+		$zip->close();
+
+		if ( $added === 0 || ! file_exists( $zip_file ) ) {
+			@unlink( $zip_file );
+			return array( 'uploaded' => 0 );
+		}
+
+		// Upload chunk to remote
+		$raw_data = file_get_contents( $zip_file );
+		@unlink( $zip_file );
+
+		$headers = array(
+			'X-VK7K-Chunk-Index' => 0,
+			'X-VK7K-Chunk-Total' => 1,
+			'X-VK7K-Component'   => 'uploads',
+			'Content-Type'       => 'application/octet-stream',
+		);
+
+		$res = VK7K_Sync_Runner::remote_post_raw(
+			$remote_url,
+			'/files/upload-chunk',
+			$raw_data,
+			$secret_key,
+			$headers
+		);
+
+		if ( is_wp_error( $res ) ) {
+			return $res;
+		}
+
+		return array(
+			'success'  => true,
+			'uploaded' => $added,
+		);
 	}
 }

@@ -3,7 +3,7 @@
  * Plugin Name: uxcribe.cl Sync
  * Plugin URI: https://uxcribe.cl
  * Description: Sincronización y clonación bidireccional (Push/Pull) de WordPress desarrollada por Uxcribe.cl. Sincroniza bases de datos complejas (WooCommerce, postmeta, options) con Search & Replace serializado recursivo y transferencia de archivos por lotes (Uploads, Temas, Plugins) vía REST API autenticada por HMAC.
- * Version: 1.5.4
+ * Version: 1.5.7
  * Author: Uxcribe.cl
  * Author URI: https://uxcribe.cl
  * License: GPLv2 or later
@@ -15,7 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // Define plugin constants
-define( 'VK7K_SYNC_VERSION', '1.5.4' );
+define( 'VK7K_SYNC_VERSION', '1.5.7' );
 define( 'VK7K_SYNC_FILE', __FILE__ );
 define( 'VK7K_SYNC_PATH', plugin_dir_path( __FILE__ ) );
 define( 'VK7K_SYNC_URL', plugin_dir_url( __FILE__ ) );
@@ -26,6 +26,8 @@ require_once VK7K_SYNC_PATH . 'includes/class-uxcribe-admin-menu.php';
 
 // Require includes
 require_once VK7K_SYNC_PATH . 'includes/class-vk7k-sync-auth.php';
+require_once VK7K_SYNC_PATH . 'includes/class-vk7k-sync-recipes.php';
+require_once VK7K_SYNC_PATH . 'includes/class-vk7k-sync-granular.php';
 require_once VK7K_SYNC_PATH . 'includes/class-vk7k-sync-replacer.php';
 require_once VK7K_SYNC_PATH . 'includes/class-vk7k-sync-db.php';
 require_once VK7K_SYNC_PATH . 'includes/class-vk7k-sync-files.php';

@@ -452,13 +452,50 @@ class VK7K_Sync_Admin {
 						<div class="vk7k-sync-type-card is-advanced" data-type="custom_advanced">
 							<div class="vk7k-type-badge-pill is-advanced"><?php esc_html_e( 'Control Total', 'vk7k-wp-sync' ); ?></div>
 							<div class="vk7k-type-icon">⚙️</div>
-							<h3 class="vk7k-type-title"><?php esc_html_e( 'Personalizado (Avanzado)', 'vk7k-wp-sync' ); ?></h3>
+							<h3 class="vk7k-type-title"><?php esc_html_e( 'Tablas y Servidor', 'vk7k-wp-sync' ); ?></h3>
 							<p class="vk7k-type-desc">
-								<?php esc_html_e( 'Despliega el control granular completo para seleccionar manualmente cada tabla, usuarios, pedidos, plugins y temas.', 'vk7k-wp-sync' ); ?>
+								<?php esc_html_e( 'Sincronización masiva por reemplazo de tablas de base de datos (staging swap), usuarios, plugins y temas completos.', 'vk7k-wp-sync' ); ?>
 							</p>
 							<div class="vk7k-type-check-indicator"><span class="dashicons dashicons-yes-alt"></span></div>
 						</div>
 
+						<!-- Card 5: Granular DataGrid & Recipes (NEW) -->
+						<div class="vk7k-sync-type-card is-granular" id="vk7k-card-open-granular" data-type="granular_recipes" style="border-color: #3b82f6; background: #eff6ff;">
+							<div class="vk7k-type-badge-pill" style="background:#3b82f6; color:#fff;"><?php esc_html_e( 'Nivel Fila / Excel', 'vk7k-wp-sync' ); ?></div>
+							<div class="vk7k-type-icon">📑</div>
+							<h3 class="vk7k-type-title" style="color: #1e40af;">
+								<?php esc_html_e( 'Editor Granular & Recetas', 'vk7k-wp-sync' ); ?>
+							</h3>
+							<p class="vk7k-type-desc">
+								<?php esc_html_e( 'Selecciona entradas, páginas, productos, menús y opciones específicas mediante un DataGrid interactivo y crea recetas reutilizables protegidas.', 'vk7k-wp-sync' ); ?>
+							</p>
+							<button type="button" class="button button-primary vk7k-btn-open-granular-modal" style="width:100%; margin-top:8px;">
+								<span class="dashicons dashicons-table-col-after" style="margin-top:2px;"></span> <?php esc_html_e( 'Abrir Selector Granular', 'vk7k-wp-sync' ); ?>
+							</button>
+						</div>
+
+					</div>
+
+					<!-- Recipe Bar Toolbar -->
+					<div class="vk7k-recipe-toolbar" style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+						<div style="display: flex; align-items: center; gap: 10px;">
+							<span class="dashicons dashicons-clipboard" style="font-size: 22px; color: #3b82f6;"></span>
+							<div>
+								<strong><?php esc_html_e( 'Receta de Sincronización Protegida:', 'vk7k-wp-sync' ); ?></strong>
+								<span id="vk7k-active-recipe-name" style="color: #64748b; font-size: 0.9rem; margin-left: 6px;"><?php esc_html_e( 'Ninguna seleccionada (modo libre)', 'vk7k-wp-sync' ); ?></span>
+							</div>
+						</div>
+						<div style="display: flex; align-items: center; gap: 8px;">
+							<select id="vk7k-select-saved-recipes" class="vk7k-select" style="min-width: 220px;">
+								<option value=""><?php esc_html_e( '— Cargar Receta Guardada —', 'vk7k-wp-sync' ); ?></option>
+							</select>
+							<button type="button" class="button button-secondary vk7k-btn-open-granular-modal">
+								<span class="dashicons dashicons-edit"></span> <?php esc_html_e( 'Editar Selección', 'vk7k-wp-sync' ); ?>
+							</button>
+							<button type="button" id="vk7k-btn-save-current-recipe" class="button button-secondary" style="display:none;">
+								<span class="dashicons dashicons-cloud-saved"></span> <?php esc_html_e( 'Guardar Receta', 'vk7k-wp-sync' ); ?>
+							</button>
+						</div>
 					</div>
 
 					<!-- Selected Preset Summary Box (shown when preset 1, 2, or 3 is active) -->
@@ -1037,6 +1074,170 @@ class VK7K_Sync_Admin {
 						<button type="button" id="vk7k-btn-confirm-path-selection" class="button button-primary">
 							<span class="dashicons dashicons-yes-alt"></span> <?php esc_html_e( 'Confirmar y Usar Esta Ruta', 'vk7k-wp-sync' ); ?>
 						</button>
+					</div>
+				</div>
+			</div>
+
+			<!-- DATAGRID LIGHTBOX MODAL (Granular Editor) -->
+			<div id="vk7k-granular-modal" class="vk7k-modal vk7k-granular-lightbox" style="display:none;">
+				<div class="vk7k-modal-content" style="max-width: 1050px; width: 95vw; height: 88vh; display: flex; flex-direction: column; padding: 0; overflow: hidden; border-radius: 12px;">
+					
+					<!-- Lightbox Header -->
+					<div class="vk7k-modal-header" style="padding: 16px 20px; background: #0f172a; color: #fff; display: flex; align-items: center; justify-content: space-between;">
+						<div style="display: flex; align-items: center; gap: 12px;">
+							<span class="dashicons dashicons-table-col-after" style="font-size: 24px; color: #38bdf8;"></span>
+							<div>
+								<h3 style="margin: 0; color: #fff; font-size: 1.15rem; font-weight: 600;">
+									<?php esc_html_e( 'Editor Granular de Sincronización', 'vk7k-wp-sync' ); ?>
+								</h3>
+								<p style="margin: 2px 0 0; color: #94a3b8; font-size: 0.8rem;">
+									<?php esc_html_e( 'Selecciona entidades específicas para sincronizar sin tocar el resto del sitio.', 'vk7k-wp-sync' ); ?>
+								</p>
+							</div>
+						</div>
+						<div style="display: flex; align-items: center; gap: 10px;">
+							<button type="button" id="vk7k-btn-save-as-recipe" class="button button-secondary" style="background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.2); color: #fff;">
+								<span class="dashicons dashicons-star-filled" style="color: #facc15; margin-top: 3px;"></span> <?php esc_html_e( 'Guardar como Receta', 'vk7k-wp-sync' ); ?>
+							</button>
+							<button type="button" class="vk7k-modal-close-btn" style="color: #94a3b8; font-size: 24px; line-height: 1;">&times;</button>
+						</div>
+					</div>
+
+					<!-- Lightbox Body: Tabs & Content -->
+					<div class="vk7k-modal-body" style="flex: 1; display: flex; flex-direction: column; padding: 0; overflow: hidden; background: #f8fafc;">
+						
+						<!-- Sub-Header: Tabs Bar & Search -->
+						<div style="padding: 10px 20px; background: #ffffff; border-bottom: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+							<div class="vk7k-granular-tabs" style="display: flex; gap: 6px;">
+								<button type="button" class="vk7k-tab-btn is-active" data-tab="pages">
+									<span class="dashicons dashicons-admin-page"></span> <?php esc_html_e( 'Páginas', 'vk7k-wp-sync' ); ?>
+									<span class="vk7k-tab-count" id="count-pages">0</span>
+								</button>
+								<button type="button" class="vk7k-tab-btn" data-tab="cpts">
+									<span class="dashicons dashicons-products"></span> <?php esc_html_e( 'Entradas / CPTs', 'vk7k-wp-sync' ); ?>
+									<span class="vk7k-tab-count" id="count-cpts">0</span>
+								</button>
+								<button type="button" class="vk7k-tab-btn" data-tab="menus">
+									<span class="dashicons dashicons-menu-alt3"></span> <?php esc_html_e( 'Menús', 'vk7k-wp-sync' ); ?>
+									<span class="vk7k-tab-count" id="count-menus">0</span>
+								</button>
+								<button type="button" class="vk7k-tab-btn" data-tab="taxonomies">
+									<span class="dashicons dashicons-tag"></span> <?php esc_html_e( 'Taxonomías', 'vk7k-wp-sync' ); ?>
+									<span class="vk7k-tab-count" id="count-taxonomies">0</span>
+								</button>
+								<button type="button" class="vk7k-tab-btn" data-tab="options">
+									<span class="dashicons dashicons-admin-settings"></span> <?php esc_html_e( 'Opciones (wp_options)', 'vk7k-wp-sync' ); ?>
+									<span class="vk7k-tab-count" id="count-options">0</span>
+								</button>
+							</div>
+
+							<!-- Search Bar & Sub-Filters -->
+							<div style="display: flex; align-items: center; gap: 8px;">
+								<select id="vk7k-cpt-filter-select" class="vk7k-select" style="display:none; font-size: 0.85rem; height: 32px; padding: 2px 8px;">
+									<option value="post"><?php esc_html_e( 'Entradas (post)', 'vk7k-wp-sync' ); ?></option>
+									<option value="product"><?php esc_html_e( 'Productos (product)', 'vk7k-wp-sync' ); ?></option>
+								</select>
+								<div class="vk7k-search-box" style="position: relative;">
+									<input type="text" id="vk7k-grid-search" placeholder="<?php esc_attr_e( 'Buscar en lista...', 'vk7k-wp-sync' ); ?>" style="height: 32px; font-size: 0.85rem; padding-left: 28px; width: 220px; border-radius: 6px; border: 1px solid #cbd5e1;" />
+									<span class="dashicons dashicons-search" style="position: absolute; left: 6px; top: 7px; color: #94a3b8; font-size: 16px;"></span>
+								</div>
+							</div>
+						</div>
+
+						<!-- Selected Counter Banner -->
+						<div style="padding: 6px 20px; background: #e0f2fe; border-bottom: 1px solid #bae6fd; font-size: 0.85rem; color: #0369a1; display: flex; align-items: center; justify-content: space-between;">
+							<div>
+								<strong id="vk7k-total-selected-count">0</strong> <?php esc_html_e( 'elementos seleccionados en total para la receta.', 'vk7k-wp-sync' ); ?>
+								<span id="vk7k-selected-breakdown" style="color: #0c4a6e; margin-left: 8px; font-size: 0.8rem;"></span>
+							</div>
+							<div style="display: flex; align-items: center; gap: 12px;">
+								<label style="display: flex; align-items: center; gap: 4px; cursor: pointer; font-weight: 500;">
+									<input type="checkbox" id="vk7k-chk-include-media" checked />
+									<span><?php esc_html_e( 'Incluir fotos/archivos multimedia asociados automáticamente', 'vk7k-wp-sync' ); ?></span>
+								</label>
+								<button type="button" id="vk7k-btn-clear-selection" class="button button-link" style="color: #0284c7; text-decoration: none; padding: 0; font-size: 0.8rem;">
+									<?php esc_html_e( 'Limpiar todo', 'vk7k-wp-sync' ); ?>
+								</button>
+							</div>
+						</div>
+
+						<!-- DataGrid Container (Scrollable Table) -->
+						<div class="vk7k-datagrid-container" style="flex: 1; overflow-y: auto; padding: 12px 20px; background: #fff;">
+							<table class="vk7k-datagrid-table widefat striped" id="vk7k-granular-table">
+								<thead>
+									<tr>
+										<th style="width: 40px; text-align: center;"><input type="checkbox" id="vk7k-grid-select-all" /></th>
+										<th style="width: 60px;"><?php esc_html_e( 'ID', 'vk7k-wp-sync' ); ?></th>
+										<th><?php esc_html_e( 'Título / Nombre', 'vk7k-wp-sync' ); ?></th>
+										<th style="width: 140px;"><?php esc_html_e( 'Slug / Identificador', 'vk7k-wp-sync' ); ?></th>
+										<th style="width: 100px;"><?php esc_html_e( 'Estado', 'vk7k-wp-sync' ); ?></th>
+										<th style="width: 140px;"><?php esc_html_e( 'Modificado', 'vk7k-wp-sync' ); ?></th>
+									</tr>
+								</thead>
+								<tbody id="vk7k-grid-tbody">
+									<tr>
+										<td colspan="6" style="text-align: center; padding: 30px; color: #64748b;">
+											<span class="spinner is-active" style="float:none; margin: 0 auto 10px;"></span>
+											<p><?php esc_html_e( 'Cargando elementos...', 'vk7k-wp-sync' ); ?></p>
+										</td>
+									</tr>
+								</tbody>
+							</table>
+						</div>
+
+						<!-- Pagination Bar -->
+						<div style="padding: 8px 20px; background: #f8fafc; border-top: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between; font-size: 0.85rem; color: #64748b;">
+							<div id="vk7k-grid-pagination-info"><?php esc_html_e( 'Mostrando 0 de 0', 'vk7k-wp-sync' ); ?></div>
+							<div style="display: flex; align-items: center; gap: 6px;">
+								<button type="button" class="button button-small" id="vk7k-grid-prev-page" disabled>&laquo; <?php esc_html_e( 'Anterior', 'vk7k-wp-sync' ); ?></button>
+								<span id="vk7k-grid-current-page" style="font-weight: 600; padding: 0 4px;">1</span>
+								<button type="button" class="button button-small" id="vk7k-grid-next-page" disabled><?php esc_html_e( 'Siguiente', 'vk7k-wp-sync' ); ?> &raquo;</button>
+							</div>
+						</div>
+
+					</div>
+
+					<!-- Lightbox Footer -->
+					<div class="vk7k-modal-footer" style="padding: 14px 20px; background: #ffffff; border-top: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between;">
+						<button type="button" class="button button-secondary vk7k-modal-close-action" style="height: 38px;">
+							<?php esc_html_e( 'Cerrar sin Sincronizar', 'vk7k-wp-sync' ); ?>
+						</button>
+						<div style="display: flex; align-items: center; gap: 10px;">
+							<button type="button" id="vk7k-btn-run-granular-sync" class="button button-primary" style="height: 38px; padding: 0 20px; font-weight: 600; background: #2563eb; border-color: #1d4ed8;">
+								<span class="dashicons dashicons-randomize" style="margin-top: 4px;"></span> <?php esc_html_e( 'Ejecutar Sincronización Granular Ahora', 'vk7k-wp-sync' ); ?>
+							</button>
+						</div>
+					</div>
+
+				</div>
+			</div>
+
+			<!-- RECIPE SAVE MODAL (Bóveda Shielded) -->
+			<div id="vk7k-save-recipe-modal" class="vk7k-modal" style="display:none;">
+				<div class="vk7k-modal-content" style="max-width: 520px;">
+					<div class="vk7k-modal-header">
+						<h3><span class="dashicons dashicons-star-filled" style="color: #facc15;"></span> <?php esc_html_e( 'Guardar Receta en Bóveda Protegida', 'vk7k-wp-sync' ); ?></h3>
+						<button type="button" class="vk7k-modal-close-btn">&times;</button>
+					</div>
+					<div class="vk7k-modal-body">
+						<form id="vk7k-recipe-save-form">
+							<div class="vk7k-form-group">
+								<label for="vk7k-recipe-input-name"><strong><?php esc_html_e( 'Nombre de la Receta:', 'vk7k-wp-sync' ); ?></strong></label>
+								<input type="text" id="vk7k-recipe-input-name" class="vk7k-input" required placeholder="<?php esc_attr_e( 'Ej: Productos Nuevos Octubre y Menú', 'vk7k-wp-sync' ); ?>" />
+							</div>
+							<div class="vk7k-form-group">
+								<label for="vk7k-recipe-input-desc"><?php esc_html_e( 'Descripción (Opcional):', 'vk7k-wp-sync' ); ?></label>
+								<textarea id="vk7k-recipe-input-desc" class="vk7k-input" rows="2" placeholder="<?php esc_attr_e( 'Sincroniza solo las páginas de toldos y el menú principal...', 'vk7k-wp-sync' ); ?>"></textarea>
+							</div>
+							<div class="vk7k-alert is-info" style="margin-top: 12px; font-size: 0.85rem;">
+								<span class="dashicons dashicons-shield"></span>
+								<?php esc_html_e( 'Esta receta quedará blindada contra migraciones y sobrescrituras tanto en la base de datos como en el archivo protegido de la bóveda.', 'vk7k-wp-sync' ); ?>
+							</div>
+							<div class="vk7k-modal-footer" style="padding: 12px 0 0; margin-top: 16px;">
+								<button type="button" class="button button-secondary vk7k-modal-close-action"><?php esc_html_e( 'Cancelar', 'vk7k-wp-sync' ); ?></button>
+								<button type="submit" class="button button-primary"><?php esc_html_e( 'Guardar Receta', 'vk7k-wp-sync' ); ?></button>
+							</div>
+						</form>
 					</div>
 				</div>
 			</div>
