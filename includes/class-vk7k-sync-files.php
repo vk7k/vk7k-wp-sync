@@ -468,63 +468,6 @@ class VK7K_Sync_Files {
 	}
 
 	/**
-	 * Create a complete ZIP bundle of all queued files for Turbo transfer.
-	 *
-	 * @param array $rel_paths Array of relative file paths.
-	 * @return array
-	 */
-	public static function create_bundle_zip( $rel_paths = array() ) {
-		if ( empty( $rel_paths ) ) {
-			$rel_paths = self::get_file_queue();
-		}
-
-		if ( ! class_exists( 'ZipArchive' ) ) {
-			return array(
-				'success' => false,
-				'message' => 'La extensión PHP ZipArchive no está habilitada en este servidor.',
-			);
-		}
-
-		$temp_dir = self::get_temp_dir();
-		$zip_name = 'bundle_' . uniqid() . '.zip';
-		$zip_path = $temp_dir . $zip_name;
-
-		$zip = new ZipArchive();
-		if ( true !== $zip->open( $zip_path, ZipArchive::CREATE | ZipArchive::OVERWRITE ) ) {
-			return array(
-				'success' => false,
-				'message' => 'No se pudo crear el archivo ZIP temporal para el paquete completo.',
-			);
-		}
-
-		$added_count = 0;
-		$total_bytes = 0;
-
-		foreach ( $rel_paths as $rel_path ) {
-			$abs_path = self::get_absolute_path( $rel_path );
-			if ( file_exists( $abs_path ) && is_readable( $abs_path ) ) {
-				$zip->addFile( $abs_path, $rel_path );
-				$total_bytes += filesize( $abs_path );
-				$added_count++;
-			}
-		}
-
-		$zip->close();
-
-		return array(
-			'success'     => true,
-			'zip_path'    => $zip_path,
-			'zip_name'    => $zip_name,
-			'zip_size'    => file_exists( $zip_path ) ? filesize( $zip_path ) : 0,
-			'total_files' => $added_count,
-			'total_bytes' => $total_bytes,
-		);
-	}
-
-	/**
-	 * Upload file to remote server via SFTP using PHP cURL.
-	 *
-	/**
 	 * Build canonical cURL SFTP URL handling both absolute and relative filesystem paths.
 	 * In libcurl, sftp://host:port//var/www/... (double slash) denotes an absolute path from filesystem root,
 	 * whereas sftp://host:port/dir/... denotes a path relative to the user's home directory.
@@ -783,7 +726,13 @@ class VK7K_Sync_Files {
 				continue;
 			}
 
-			$target_file = $base_dir . ltrim( $filename, '/' );
+			if ( 0 === strpos( $filename, 'uploads/' ) ) {
+				$upload_dir = wp_upload_dir();
+				$rel_in_uploads = substr( $filename, strlen( 'uploads/' ) );
+				$target_file = trailingslashit( wp_normalize_path( $upload_dir['basedir'] ) ) . ltrim( $rel_in_uploads, '/' );
+			} else {
+				$target_file = $base_dir . ltrim( $filename, '/' );
+			}
 			$target_dir  = dirname( $target_file );
 
 			if ( ! file_exists( $target_dir ) ) {
@@ -884,23 +833,15 @@ class VK7K_Sync_Files {
 			return array( 'uploaded' => 0 );
 		}
 
-		// Upload chunk to remote
+		// Upload chunk to remote via unified client
 		$raw_data = file_get_contents( $zip_file );
 		@unlink( $zip_file );
 
-		$headers = array(
-			'X-VK7K-Chunk-Index' => 0,
-			'X-VK7K-Chunk-Total' => 1,
-			'X-VK7K-Component'   => 'uploads',
-			'Content-Type'       => 'application/octet-stream',
-		);
-
-		$res = VK7K_Sync_Runner::remote_post_raw(
-			$remote_url,
-			'/files/upload-chunk',
+		$res = VK7K_Sync_Client::post_binary(
+			'files/upload-chunk',
 			$raw_data,
-			$secret_key,
-			$headers
+			$remote_url,
+			$secret_key
 		);
 
 		if ( is_wp_error( $res ) ) {
@@ -910,6 +851,94 @@ class VK7K_Sync_Files {
 		return array(
 			'success'  => true,
 			'uploaded' => $added,
+		);
+	}
+
+	/**
+	 * Pull specific media files from remote into local uploads directory.
+	 *
+	 * @param string $remote_url
+	 * @param string $secret_key
+	 * @param array  $media_files Array of media info arrays with 'rel_path' or array of relative paths.
+	 * @return array
+	 */
+	public static function pull_specific_files_from_remote( $remote_url, $secret_key, $media_files ) {
+		if ( empty( $media_files ) ) {
+			return array( 'success' => true, 'downloaded' => 0 );
+		}
+
+		$upload_dir = wp_upload_dir();
+		$basedir    = trailingslashit( wp_normalize_path( $upload_dir['basedir'] ) );
+		$downloaded = 0;
+
+		$rel_paths = array();
+		foreach ( $media_files as $mf ) {
+			$rel = is_array( $mf ) ? ( $mf['rel_path'] ?? '' ) : $mf;
+			if ( ! empty( $rel ) ) {
+				$rel_paths[] = ltrim( $rel, '/' );
+			}
+		}
+		$rel_paths = array_unique( $rel_paths );
+
+		// 1. Try batch download via download-chunk endpoint if possible
+		$files_for_chunk = array();
+		foreach ( $rel_paths as $rel ) {
+			$files_for_chunk[] = 'wp-content/uploads/' . $rel;
+		}
+
+		$temp_dir = self::get_temp_dir();
+		$temp_zip = $temp_dir . 'recv_granular_' . uniqid() . '.zip';
+
+		$dl_res = VK7K_Sync_Client::stream_download(
+			'files/download-chunk',
+			array(
+				'files'       => $files_for_chunk,
+				'chunk_mb'    => 32,
+				'chunk_files' => 200,
+				'stream'      => true,
+			),
+			$temp_zip,
+			$remote_url,
+			$secret_key
+		);
+
+		if ( ! is_wp_error( $dl_res ) && file_exists( $temp_zip ) && filesize( $temp_zip ) > 0 ) {
+			$ext_res = self::extract_zip_chunk( $temp_zip );
+			if ( ! empty( $ext_res['success'] ) ) {
+				$downloaded = (int) ( $ext_res['extracted'] ?? count( $rel_paths ) );
+			}
+		}
+		@unlink( $temp_zip );
+
+		// 2. Fallback / Verification: ensure each file exists locally, download directly if missing
+		$remote_clean_url = untrailingslashit( $remote_url );
+		foreach ( $rel_paths as $rel ) {
+			$local_file = $basedir . $rel;
+			if ( ! file_exists( $local_file ) || 0 === filesize( $local_file ) ) {
+				$remote_file_url = $remote_clean_url . '/wp-content/uploads/' . $rel;
+				$res = wp_remote_get( $remote_file_url, array(
+					'timeout'   => 30,
+					'sslverify' => false,
+				) );
+
+				if ( ! is_wp_error( $res ) && 200 === wp_remote_retrieve_response_code( $res ) ) {
+					$body = wp_remote_retrieve_body( $res );
+					if ( ! empty( $body ) ) {
+						$target_dir = dirname( $local_file );
+						if ( ! file_exists( $target_dir ) ) {
+							wp_mkdir_p( $target_dir );
+						}
+						if ( false !== @file_put_contents( $local_file, $body ) ) {
+							$downloaded++;
+						}
+					}
+				}
+			}
+		}
+
+		return array(
+			'success'    => true,
+			'downloaded' => $downloaded,
 		);
 	}
 }

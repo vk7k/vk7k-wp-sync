@@ -82,6 +82,9 @@ class VK7K_Sync_DB {
 
 	/**
 	 * Backward compatibility alias for backup_admin_users.
+	 *
+	 * @deprecated 1.6.0 Use backup_admin_users() instead.
+	 * @return bool
 	 */
 	public static function backup_current_admin_user() {
 		return self::backup_admin_users();
@@ -196,6 +199,10 @@ class VK7K_Sync_DB {
 
 	/**
 	 * Backward compatibility alias for restore_admin_users.
+	 *
+	 * @deprecated 1.6.0 Use restore_admin_users() instead.
+	 * @param string $table_prefix
+	 * @return bool
 	 */
 	public static function restore_current_admin_user( $table_prefix = '' ) {
 		return self::restore_admin_users( $table_prefix );

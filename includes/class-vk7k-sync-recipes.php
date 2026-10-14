@@ -199,6 +199,8 @@ class VK7K_Sync_Recipes {
 				'terms'      => ! empty( $recipe_data['entities']['terms'] ) && is_array( $recipe_data['entities']['terms'] ) ? array_map( 'intval', $recipe_data['entities']['terms'] ) : array(),
 				'fse'        => ! empty( $recipe_data['entities']['fse'] ) && is_array( $recipe_data['entities']['fse'] ) ? array_map( 'sanitize_text_field', $recipe_data['entities']['fse'] ) : array(),
 				'options'    => ! empty( $recipe_data['entities']['options'] ) && is_array( $recipe_data['entities']['options'] ) ? array_map( 'sanitize_text_field', $recipe_data['entities']['options'] ) : array(),
+				'plugins'    => ! empty( $recipe_data['entities']['plugins'] ) && is_array( $recipe_data['entities']['plugins'] ) ? array_map( 'sanitize_file_name', $recipe_data['entities']['plugins'] ) : array(),
+				'themes'     => ! empty( $recipe_data['entities']['themes'] ) && is_array( $recipe_data['entities']['themes'] ) ? array_map( 'sanitize_file_name', $recipe_data['entities']['themes'] ) : array(),
 			),
 			'sync_media'  => ! empty( $recipe_data['sync_media'] ),
 			'is_builtin'  => ! empty( $recipe_data['is_builtin'] ),

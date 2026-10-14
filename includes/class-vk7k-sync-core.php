@@ -89,6 +89,11 @@ class VK7K_Sync_Core {
 		add_action( 'wp_ajax_vk7k_sync_granular_inspect', array( $this, 'ajax_granular_inspect' ) );
 		add_action( 'wp_ajax_vk7k_sync_granular_query', array( $this, 'ajax_granular_query' ) );
 		add_action( 'wp_ajax_vk7k_sync_granular_run', array( $this, 'ajax_granular_run' ) );
+
+		// Editor single-content Push/Pull actions
+		add_action( 'wp_ajax_vk7k_sync_editor_inspect', array( $this, 'ajax_editor_inspect' ) );
+		add_action( 'wp_ajax_vk7k_sync_editor_push', array( $this, 'ajax_editor_push' ) );
+		add_action( 'wp_ajax_vk7k_sync_editor_pull', array( $this, 'ajax_editor_pull' ) );
 	}
 
 	/**
@@ -918,40 +923,381 @@ class VK7K_Sync_Core {
 			wp_send_json_error( array( 'message' => 'No autorizado.' ) );
 		}
 
-		$direction  = isset( $_POST['direction'] ) ? sanitize_key( $_POST['direction'] ) : 'push';
-		$selection  = isset( $_POST['selection'] ) ? (array) $_POST['selection'] : array();
-		$settings   = get_option( 'vk7k_sync_settings', array() );
-		$remote_url = ! empty( $settings['remote_url'] ) ? $settings['remote_url'] : '';
-		$secret_key = ! empty( $settings['remote_secret_key'] ) ? $settings['remote_secret_key'] : '';
+		$direction     = isset( $_POST['direction'] ) ? sanitize_key( $_POST['direction'] ) : 'push';
+		$selection     = isset( $_POST['selection'] ) ? (array) $_POST['selection'] : array();
+		$active_target = VK7K_Sync_Auth::get_active_target();
+		$settings      = VK7K_Sync_Auth::get_settings();
+		$remote_url    = ! empty( $active_target['url'] ) ? $active_target['url'] : ( $settings['remote_url'] ?? '' );
+		$secret_key    = ! empty( $active_target['remote_secret_key'] ) ? $active_target['remote_secret_key'] : ( $settings['remote_secret_key'] ?? '' );
+		$remote_ip     = ! empty( $active_target['ip'] ) ? $active_target['ip'] : ( $settings['remote_ip'] ?? '' );
 
 		if ( empty( $remote_url ) || empty( $secret_key ) ) {
 			wp_send_json_error( array( 'message' => 'Configuración de conexión remota incompleta.' ) );
 		}
 
-		// 1. Export package locally
-		$package = VK7K_Sync_Granular::export_package( $selection );
+		$posts_synced   = 0;
+		$options_synced = 0;
+		$media_synced   = 0;
+		$plugins_synced = 0;
+		$themes_synced  = 0;
+		$errors         = array();
 
-		// 2. Send package to remote /granular/import endpoint
-		$response = VK7K_Sync_Runner::remote_post(
-			$remote_url,
-			'/granular/import',
+		$has_db_entities = ! empty( $selection['posts'] ) || ! empty( $selection['menus'] ) || ! empty( $selection['options'] ) || ! empty( $selection['terms'] ) || ! empty( $selection['slug'] );
+
+		if ( 'pull' === $direction ) {
+			// 1. Pull Database entities and media if selected
+			if ( $has_db_entities ) {
+				$res = VK7K_Sync_Client::post(
+					'granular/export',
+					$selection,
+					$remote_url,
+					$secret_key
+				);
+
+				if ( is_wp_error( $res ) ) {
+					wp_send_json_error( array( 'message' => $res->get_error_message() ) );
+				}
+
+				if ( empty( $res['success'] ) || empty( $res['package'] ) ) {
+					wp_send_json_error( array( 'message' => $res['message'] ?? 'Error obteniendo datos granulares desde remoto.' ) );
+				}
+
+				$package = $res['package'];
+
+				// Import locally
+				$sub_request = new WP_REST_Request( 'POST', '/' . VK7K_Sync_API::REST_NAMESPACE . '/granular/import' );
+				$sub_request->set_header( 'content-type', 'application/json' );
+				$sub_request->set_body( wp_json_encode( array(
+					'package' => array_merge( $package, array(
+						'source_url' => $package['source_url'] ?? $remote_url,
+						'target_url' => home_url(),
+					) ),
+				) ) );
+
+				$res_import = VK7K_Sync_API::handle_granular_import( $sub_request );
+				if ( is_wp_error( $res_import ) ) {
+					wp_send_json_error( array( 'message' => $res_import->get_error_message() ) );
+				}
+
+				$posts_synced   = count( $package['posts'] ?? array() );
+				$options_synced = count( $package['options'] ?? array() );
+
+				if ( ! empty( $selection['sync_media'] ) && ! empty( $package['media_files'] ) ) {
+					$res_files = VK7K_Sync_Files::pull_specific_files_from_remote( $remote_url, $secret_key, $package['media_files'] );
+					if ( ! is_wp_error( $res_files ) && ! empty( $res_files['downloaded'] ) ) {
+						$media_synced = (int) $res_files['downloaded'];
+					}
+				}
+			}
+
+			// 2. Pull Plugins if selected
+			if ( ! empty( $selection['plugins'] ) && is_array( $selection['plugins'] ) ) {
+				$prep = VK7K_Sync_Runner::step_prepare_files( array(
+					'mode'       => 'pull',
+					'components' => array( 'plugins' ),
+					'options'    => array( 'selected_plugins' => $selection['plugins'] ),
+					'remote_url' => $remote_url,
+					'secret_key' => $secret_key,
+					'remote_ip'  => $remote_ip,
+				) );
+				if ( ! empty( $prep['success'] ) && ! empty( $prep['total_files'] ) ) {
+					$offset = 0;
+					while ( $offset < $prep['total_files'] ) {
+						$chunk = VK7K_Sync_Runner::step_sync_files_chunk( array(
+							'mode'       => 'pull',
+							'offset'     => $offset,
+							'chunk_mb'   => 8,
+							'remote_url' => $remote_url,
+							'secret_key' => $secret_key,
+							'remote_ip'  => $remote_ip,
+						) );
+						if ( empty( $chunk['success'] ) ) {
+							$errors[] = 'Error al transferir lote de plugins: ' . ( $chunk['message'] ?? '' );
+							break;
+						}
+						$offset = (int) ( $chunk['offset'] ?? ( $offset + 1 ) );
+						if ( ! empty( $chunk['is_done'] ) ) {
+							break;
+						}
+					}
+					$plugins_synced = count( $selection['plugins'] );
+				} elseif ( ! empty( $prep['success'] ) ) {
+					$plugins_synced = count( $selection['plugins'] );
+				}
+			}
+
+			// 3. Pull Themes if selected
+			if ( ! empty( $selection['themes'] ) && is_array( $selection['themes'] ) ) {
+				$prep_t = VK7K_Sync_Runner::step_prepare_files( array(
+					'mode'       => 'pull',
+					'components' => array( 'themes' ),
+					'options'    => array( 'selected_themes' => $selection['themes'] ),
+					'remote_url' => $remote_url,
+					'secret_key' => $secret_key,
+					'remote_ip'  => $remote_ip,
+				) );
+				if ( ! empty( $prep_t['success'] ) && ! empty( $prep_t['total_files'] ) ) {
+					$offset = 0;
+					while ( $offset < $prep_t['total_files'] ) {
+						$chunk = VK7K_Sync_Runner::step_sync_files_chunk( array(
+							'mode'       => 'pull',
+							'offset'     => $offset,
+							'chunk_mb'   => 8,
+							'remote_url' => $remote_url,
+							'secret_key' => $secret_key,
+							'remote_ip'  => $remote_ip,
+						) );
+						if ( empty( $chunk['success'] ) ) {
+							$errors[] = 'Error al transferir lote de temas: ' . ( $chunk['message'] ?? '' );
+							break;
+						}
+						$offset = (int) ( $chunk['offset'] ?? ( $offset + 1 ) );
+						if ( ! empty( $chunk['is_done'] ) ) {
+							break;
+						}
+					}
+					$themes_synced = count( $selection['themes'] );
+				} elseif ( ! empty( $prep_t['success'] ) ) {
+					$themes_synced = count( $selection['themes'] );
+				}
+			}
+
+			$summary_parts = array();
+			if ( $posts_synced > 0 )   $summary_parts[] = sprintf( '%d contenidos', $posts_synced );
+			if ( $options_synced > 0 ) $summary_parts[] = sprintf( '%d opciones', $options_synced );
+			if ( $media_synced > 0 )   $summary_parts[] = sprintf( '%d archivos de medios', $media_synced );
+			if ( $plugins_synced > 0 ) $summary_parts[] = sprintf( '%d plugins', $plugins_synced );
+			if ( $themes_synced > 0 )  $summary_parts[] = sprintf( '%d temas', $themes_synced );
+
+			wp_send_json_success( array(
+				'message'        => 'Pull granular exitoso: ' . ( ! empty( $summary_parts ) ? implode( ', ', $summary_parts ) : 'sin cambios' ) . ' recibidos.',
+				'posts_synced'   => $posts_synced,
+				'options_synced' => $options_synced,
+				'media_synced'   => $media_synced,
+				'plugins_synced' => $plugins_synced,
+				'themes_synced'  => $themes_synced,
+			) );
+		}
+
+		// Push to remote
+		// 1. Database entities and media
+		if ( $has_db_entities ) {
+			$package = VK7K_Sync_Granular::export_package( $selection );
+
+			$res = VK7K_Sync_Client::post(
+				'granular/import',
+				array( 'package' => $package ),
+				$remote_url,
+				$secret_key
+			);
+
+			if ( is_wp_error( $res ) ) {
+				wp_send_json_error( array( 'message' => $res->get_error_message() ) );
+			}
+
+			if ( empty( $res['success'] ) ) {
+				wp_send_json_error( array( 'message' => $res['message'] ?? 'Error en la sincronización granular remota.' ) );
+			}
+
+			$posts_synced   = $res['posts_synced'] ?? count( $package['posts'] ?? array() );
+			$options_synced = $res['options_synced'] ?? count( $package['options'] ?? array() );
+
+			if ( ! empty( $selection['sync_media'] ) && ! empty( $package['media_files'] ) ) {
+				$rel_paths = wp_list_pluck( $package['media_files'], 'rel_path' );
+				$res_files = VK7K_Sync_Files::send_specific_files_to_remote( $remote_url, $secret_key, $rel_paths );
+				if ( ! is_wp_error( $res_files ) && ! empty( $res_files['uploaded'] ) ) {
+					$media_synced = (int) $res_files['uploaded'];
+				}
+			}
+		}
+
+		// 2. Push selected plugins
+		if ( ! empty( $selection['plugins'] ) && is_array( $selection['plugins'] ) ) {
+			$available_plugins = VK7K_Sync_Files::get_available_plugins();
+			$active_lookup     = array();
+			foreach ( $available_plugins as $p ) {
+				$active_lookup[ $p['slug'] ] = ! empty( $p['is_active'] );
+			}
+
+			foreach ( $selection['plugins'] as $plugin_slug ) {
+				$plugin_slug = sanitize_file_name( $plugin_slug );
+				$is_active   = ! empty( $active_lookup[ $plugin_slug ] );
+				$res_p       = VK7K_Sync_Runner::push_plugin( $plugin_slug, $is_active, $remote_url, $secret_key, $remote_ip );
+				if ( ! empty( $res_p['success'] ) ) {
+					$plugins_synced++;
+				} else {
+					$errors[] = sprintf( 'Error en plugin %s: %s', $plugin_slug, $res_p['message'] ?? 'falló' );
+				}
+			}
+		}
+
+		// 3. Push selected themes
+		if ( ! empty( $selection['themes'] ) && is_array( $selection['themes'] ) ) {
+			$available_themes = VK7K_Sync_Files::get_available_themes();
+			$active_lookup_t  = array();
+			foreach ( $available_themes as $t ) {
+				$active_lookup_t[ $t['slug'] ] = ! empty( $t['is_active'] );
+			}
+
+			foreach ( $selection['themes'] as $theme_slug ) {
+				$theme_slug = sanitize_file_name( $theme_slug );
+				$is_active  = ! empty( $active_lookup_t[ $theme_slug ] );
+				$res_t      = VK7K_Sync_Runner::push_theme( $theme_slug, $is_active, $remote_url, $secret_key, $remote_ip );
+				if ( ! empty( $res_t['success'] ) ) {
+					$themes_synced++;
+				} else {
+					$errors[] = sprintf( 'Error en tema %s: %s', $theme_slug, $res_t['message'] ?? 'falló' );
+				}
+			}
+		}
+
+		$summary_parts = array();
+		if ( $posts_synced > 0 )   $summary_parts[] = sprintf( '%d entradas/páginas', $posts_synced );
+		if ( $options_synced > 0 ) $summary_parts[] = sprintf( '%d opciones', $options_synced );
+		if ( $media_synced > 0 )   $summary_parts[] = sprintf( '%d archivos de medios', $media_synced );
+		if ( $plugins_synced > 0 ) $summary_parts[] = sprintf( '%d plugins', $plugins_synced );
+		if ( $themes_synced > 0 )  $summary_parts[] = sprintf( '%d temas', $themes_synced );
+
+		$msg = 'Sincronización granular exitosa: ' . ( ! empty( $summary_parts ) ? implode( ', ', $summary_parts ) : 'elementos procesados' ) . ' transferidos.';
+		if ( ! empty( $errors ) ) {
+			$msg .= ' Avisos: ' . implode( ' | ', $errors );
+		}
+
+		wp_send_json_success( array(
+			'message'        => $msg,
+			'posts_synced'   => $posts_synced,
+			'options_synced' => $options_synced,
+			'media_synced'   => $media_synced,
+			'plugins_synced' => $plugins_synced,
+			'themes_synced'  => $themes_synced,
+		) );
+	}
+
+	/**
+	 * AJAX: Inspect single post/page/product for Gutenberg / FSE Sync panel.
+	 */
+	public function ajax_editor_inspect() {
+		check_ajax_referer( 'vk7k_sync_admin_nonce', 'nonce' );
+		if ( ! current_user_can( 'edit_posts' ) ) {
+			wp_send_json_error( array( 'message' => __( 'No autorizado.', 'vk7k-wp-sync' ) ) );
+		}
+
+		$post_id = isset( $_POST['post_id'] ) ? (int) $_POST['post_id'] : 0;
+		if ( $post_id <= 0 ) {
+			wp_send_json_error( array( 'message' => __( 'ID de contenido inválido.', 'vk7k-wp-sync' ) ) );
+		}
+
+		$data = VK7K_Sync_Granular::inspect_single_post( $post_id );
+		if ( ! $data ) {
+			wp_send_json_error( array( 'message' => __( 'Contenido no encontrado.', 'vk7k-wp-sync' ) ) );
+		}
+
+		// Perform live health check and version sync verification with remote target
+		$active_target = VK7K_Sync_Auth::get_active_target();
+		$settings      = VK7K_Sync_Auth::get_settings();
+		$remote_url    = ! empty( $active_target['url'] ) ? $active_target['url'] : ( $settings['remote_url'] ?? '' );
+		$secret_key    = ! empty( $active_target['remote_secret_key'] ) ? $active_target['remote_secret_key'] : ( $settings['remote_secret_key'] ?? '' );
+		$remote_ip     = ! empty( $active_target['remote_ip'] ) ? $active_target['remote_ip'] : ( $settings['remote_ip'] ?? '' );
+
+		$remote_status = array(
+			'configured'     => ! empty( $remote_url ),
+			'connected'      => false,
+			'remote_version' => null,
+			'local_version'  => VK7K_SYNC_VERSION,
+			'version_match'  => false,
+			'error'          => null,
+			'needs_action'   => false,
+		);
+
+		if ( empty( $remote_url ) ) {
+			$remote_status['error']        = __( 'Servidor remoto no configurado. Debes vincular un entorno en los ajustes del plugin.', 'vk7k-wp-sync' );
+			$remote_status['needs_action'] = true;
+		} else {
+			$test = VK7K_Sync_Client::post( 'auth/test', array(), $remote_url, $secret_key, $remote_ip );
+			if ( is_wp_error( $test ) ) {
+				$remote_status['error']        = sprintf( __( 'Error al conectar con el servidor remoto: %s', 'vk7k-wp-sync' ), $test->get_error_message() );
+				$remote_status['needs_action'] = true;
+			} elseif ( empty( $test['success'] ) ) {
+				$remote_status['error']        = ! empty( $test['message'] ) ? $test['message'] : __( 'Fallo de autenticación con el servidor remoto.', 'vk7k-wp-sync' );
+				$remote_status['needs_action'] = true;
+			} else {
+				$remote_status['connected']      = true;
+				$remote_status['remote_version'] = $test['plugin_version'] ?? 'desconocida';
+				$remote_status['remote_site']    = $test['site_name'] ?? $remote_url;
+
+				if ( version_compare( $remote_status['remote_version'], '1.6.0', '<' ) ) {
+					$remote_status['version_match'] = false;
+					$remote_status['error']         = sprintf(
+						__( 'Versión remota desactualizada (v%s vs v%s local). El servidor remoto no dispone de los endpoints para sincronizar este contenido. Debes desplegar o actualizar el plugin en el remoto.', 'vk7k-wp-sync' ),
+						$remote_status['remote_version'],
+						VK7K_SYNC_VERSION
+					);
+					$remote_status['needs_action']  = true;
+				} else {
+					$remote_status['version_match'] = true;
+				}
+			}
+		}
+
+		$data['remote_status'] = $remote_status;
+
+		wp_send_json_success( $data );
+	}
+
+	/**
+	 * AJAX: Push single post/page/product and dependencies from Gutenberg / FSE to remote.
+	 */
+	public function ajax_editor_push() {
+		check_ajax_referer( 'vk7k_sync_admin_nonce', 'nonce' );
+		if ( ! current_user_can( 'edit_posts' ) ) {
+			wp_send_json_error( array( 'message' => __( 'No autorizado.', 'vk7k-wp-sync' ) ) );
+		}
+
+		$post_id    = isset( $_POST['post_id'] ) ? (int) $_POST['post_id'] : 0;
+		$sync_media = ! empty( $_POST['sync_media'] );
+
+		if ( $post_id <= 0 ) {
+			wp_send_json_error( array( 'message' => __( 'ID de contenido inválido.', 'vk7k-wp-sync' ) ) );
+		}
+
+		$active_target = VK7K_Sync_Auth::get_active_target();
+		$settings      = VK7K_Sync_Auth::get_settings();
+		$remote_url    = ! empty( $active_target['url'] ) ? $active_target['url'] : ( $settings['remote_url'] ?? '' );
+		$secret_key    = ! empty( $active_target['remote_secret_key'] ) ? $active_target['remote_secret_key'] : ( $settings['remote_secret_key'] ?? '' );
+
+		if ( empty( $remote_url ) || empty( $secret_key ) ) {
+			wp_send_json_error( array( 'message' => __( 'Servidor remoto no configurado. Revisa los ajustes de uxcribe.cl Sync.', 'vk7k-wp-sync' ) ) );
+		}
+
+		// 1. Export package locally with all media and dependencies
+		$package = VK7K_Sync_Granular::export_package( array(
+			'posts'      => array( $post_id ),
+			'sync_media' => $sync_media,
+		) );
+
+		if ( empty( $package['posts'] ) ) {
+			wp_send_json_error( array( 'message' => __( 'No se encontraron datos para exportar de este contenido.', 'vk7k-wp-sync' ) ) );
+		}
+
+		// 2. Send package to remote /granular/import
+		$res = VK7K_Sync_Client::post(
+			'granular/import',
 			array( 'package' => $package ),
+			$remote_url,
 			$secret_key
 		);
 
-		if ( is_wp_error( $response ) ) {
-			wp_send_json_error( array( 'message' => $response->get_error_message() ) );
+		if ( is_wp_error( $res ) ) {
+			wp_send_json_error( array( 'message' => $res->get_error_message() ) );
 		}
 
-		$body = json_decode( wp_remote_retrieve_body( $response ), true );
-		if ( empty( $body['success'] ) ) {
-			wp_send_json_error( array( 'message' => $body['message'] ?? 'Error en la sincronización granular remota.' ) );
+		if ( empty( $res['success'] ) ) {
+			wp_send_json_error( array( 'message' => $res['message'] ?? __( 'Error en el servidor remoto al importar contenido.', 'vk7k-wp-sync' ) ) );
 		}
 
-		// 3. If media was needed and requested, trigger media transfer
+		// 3. Send media files if requested
 		$media_synced = 0;
-		if ( ! empty( $selection['sync_media'] ) && ! empty( $package['media_files'] ) ) {
-			// Trigger file transfer for specific attachment relative paths
+		if ( $sync_media && ! empty( $package['media_files'] ) ) {
 			$rel_paths = wp_list_pluck( $package['media_files'], 'rel_path' );
 			$res_files = VK7K_Sync_Files::send_specific_files_to_remote( $remote_url, $secret_key, $rel_paths );
 			if ( ! is_wp_error( $res_files ) && ! empty( $res_files['uploaded'] ) ) {
@@ -959,16 +1305,157 @@ class VK7K_Sync_Core {
 			}
 		}
 
+		// Resolve remote permalink for the pushed post
+		$remote_post_url = ! empty( $res['remote_post_url'] ) ? esc_url_raw( $res['remote_post_url'] ) : '';
+		if ( empty( $remote_post_url ) ) {
+			$local_permalink = get_permalink( $post_id );
+			if ( $local_permalink ) {
+				$remote_post_url = str_replace( home_url(), untrailingslashit( $remote_url ), $local_permalink );
+			}
+		}
+
+		$post_title = get_the_title( $post_id );
+		$msg = sprintf(
+			__( '¡Push completado con éxito! "%s" subido a remoto (%d entrada, %d metadatos, %d archivos de medios transferidos).', 'vk7k-wp-sync' ),
+			! empty( $post_title ) ? $post_title : "#{$post_id}",
+			count( $package['posts'] ),
+			count( $package['postmeta'] ),
+			$media_synced
+		);
+
 		wp_send_json_success( array(
-			'message'        => sprintf(
-				'Sincronización granular exitosa: %d entradas, %d opciones, %d archivos de medios transferidos.',
-				$body['posts_synced'] ?? count( $package['posts'] ),
-				$body['options_synced'] ?? count( $package['options'] ),
-				$media_synced
+			'message'         => $msg,
+			'remote_post_url' => $remote_post_url,
+			'posts_synced'    => count( $package['posts'] ),
+			'meta_synced'     => count( $package['postmeta'] ),
+			'media_synced'    => $media_synced,
+		) );
+	}
+
+	/**
+	 * AJAX: Pull single post/page/product and dependencies from remote into local Gutenberg / FSE.
+	 */
+	public function ajax_editor_pull() {
+		check_ajax_referer( 'vk7k_sync_admin_nonce', 'nonce' );
+		if ( ! current_user_can( 'edit_posts' ) ) {
+			wp_send_json_error( array( 'message' => __( 'No autorizado.', 'vk7k-wp-sync' ) ) );
+		}
+
+		$post_id    = isset( $_POST['post_id'] ) ? (int) $_POST['post_id'] : 0;
+		$post_type  = isset( $_POST['post_type'] ) ? sanitize_key( $_POST['post_type'] ) : '';
+		$post_name  = isset( $_POST['post_name'] ) ? sanitize_title( $_POST['post_name'] ) : '';
+		$sync_media = ! empty( $_POST['sync_media'] );
+
+		if ( $post_id <= 0 && empty( $post_name ) ) {
+			wp_send_json_error( array( 'message' => __( 'Identificador de contenido inválido.', 'vk7k-wp-sync' ) ) );
+		}
+
+		$local_post = $post_id > 0 ? get_post( $post_id ) : null;
+		if ( $local_post ) {
+			$post_type = $post_type ?: $local_post->post_type;
+			$post_name = $post_name ?: $local_post->post_name;
+		}
+
+		$active_target = VK7K_Sync_Auth::get_active_target();
+		$settings      = VK7K_Sync_Auth::get_settings();
+		$remote_url    = ! empty( $active_target['url'] ) ? $active_target['url'] : ( $settings['remote_url'] ?? '' );
+		$secret_key    = ! empty( $active_target['remote_secret_key'] ) ? $active_target['remote_secret_key'] : ( $settings['remote_secret_key'] ?? '' );
+
+		if ( empty( $remote_url ) || empty( $secret_key ) ) {
+			wp_send_json_error( array( 'message' => __( 'Servidor remoto no configurado. Revisa los ajustes de uxcribe.cl Sync.', 'vk7k-wp-sync' ) ) );
+		}
+
+		// 1. Request export package from remote /granular/export
+		$res = VK7K_Sync_Client::post(
+			'granular/export',
+			array(
+				'posts'      => $post_id > 0 ? array( $post_id ) : array(),
+				'slug'       => $post_name,
+				'post_type'  => $post_type,
+				'sync_media' => $sync_media,
 			),
-			'posts_synced'   => $body['posts_synced'] ?? count( $package['posts'] ),
-			'options_synced' => $body['options_synced'] ?? count( $package['options'] ),
-			'media_synced'   => $media_synced,
+			$remote_url,
+			$secret_key
+		);
+
+		if ( is_wp_error( $res ) ) {
+			wp_send_json_error( array( 'message' => __( 'Error conectando con el servidor remoto: ', 'vk7k-wp-sync' ) . $res->get_error_message() ) );
+		}
+
+		if ( empty( $res['success'] ) || empty( $res['package'] ) || empty( $res['package']['posts'] ) ) {
+			wp_send_json_error( array(
+				'message' => sprintf(
+					__( 'No se encontró este contenido en el sitio remoto (slug: "%s", tipo: "%s"). Asegúrate de que exista en el servidor remoto o haz Push primero.', 'vk7k-wp-sync' ),
+					$post_name,
+					$post_type
+				)
+			) );
+		}
+		$package = $res['package'];
+
+		// 2. Map remote post ID to local post ID if local post exists
+		if ( $post_id > 0 && ! empty( $package['posts'] ) ) {
+			$remote_primary_id = (int) $package['posts'][0]['ID'];
+			if ( $remote_primary_id !== $post_id ) {
+				$package['posts'][0]['ID'] = $post_id;
+				if ( ! empty( $package['postmeta'] ) ) {
+					foreach ( $package['postmeta'] as &$pm ) {
+						if ( (int) $pm['post_id'] === $remote_primary_id ) {
+							$pm['post_id'] = $post_id;
+						}
+					}
+					unset( $pm );
+				}
+				if ( ! empty( $package['term_relationships'] ) ) {
+					foreach ( $package['term_relationships'] as &$tr ) {
+						if ( (int) $tr['object_id'] === $remote_primary_id ) {
+							$tr['object_id'] = $post_id;
+						}
+					}
+					unset( $tr );
+				}
+			}
+		}
+
+		// 3. Import package locally with URL replacement
+		$sub_request = new WP_REST_Request( 'POST', '/' . VK7K_Sync_API::REST_NAMESPACE . '/granular/import' );
+		$sub_request->set_header( 'content-type', 'application/json' );
+		$sub_request->set_body( wp_json_encode( array(
+			'package' => array_merge( $package, array(
+				'source_url' => $package['source_url'] ?? $remote_url,
+				'target_url' => home_url(),
+			) ),
+		) ) );
+
+		$res_import = VK7K_Sync_API::handle_granular_import( $sub_request );
+		if ( is_wp_error( $res_import ) ) {
+			wp_send_json_error( array( 'message' => $res_import->get_error_message() ) );
+		}
+
+		// 4. Pull media files from remote
+		$media_pulled = 0;
+		if ( $sync_media && ! empty( $package['media_files'] ) ) {
+			$res_files = VK7K_Sync_Files::pull_specific_files_from_remote( $remote_url, $secret_key, $package['media_files'] );
+			if ( ! is_wp_error( $res_files ) && ! empty( $res_files['downloaded'] ) ) {
+				$media_pulled = (int) $res_files['downloaded'];
+			}
+		}
+
+		$post_title = get_the_title( $post_id );
+		$msg = sprintf(
+			__( '¡Pull completado con éxito! "%s" actualizado desde remoto (%d entrada, %d metadatos, %d archivos de medios recibidos). Recarga el editor para ver los cambios.', 'vk7k-wp-sync' ),
+			! empty( $post_title ) ? $post_title : "#{$post_id}",
+			count( $package['posts'] ),
+			count( $package['postmeta'] ),
+			$media_pulled
+		);
+
+		wp_send_json_success( array(
+			'message'         => $msg,
+			'reload_required' => true,
+			'posts_synced'    => count( $package['posts'] ),
+			'meta_synced'     => count( $package['postmeta'] ),
+			'media_synced'    => $media_pulled,
 		) );
 	}
 }

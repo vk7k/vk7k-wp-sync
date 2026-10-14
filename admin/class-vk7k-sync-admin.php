@@ -22,6 +22,7 @@ class VK7K_Sync_Admin {
 	public function __construct() {
 		add_action( 'admin_menu', array( $this, 'register_admin_menu' ), 10 );
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_assets' ) );
+		add_action( 'enqueue_block_editor_assets', array( $this, 'enqueue_block_editor_assets' ) );
 		add_action( 'admin_init', array( $this, 'handle_legacy_slug_redirect' ) );
 	}
 
@@ -61,6 +62,24 @@ class VK7K_Sync_Admin {
 				75
 			);
 		}
+
+		// Register legacy slug aliases as hidden pages to prevent "No tienes permisos" error
+		add_submenu_page(
+			null,
+			__( 'uxcribe.cl Sync', 'vk7k-wp-sync' ),
+			__( 'Sync', 'vk7k-wp-sync' ),
+			'manage_options',
+			'vk7k-wp-sync',
+			array( $this, 'render_admin_page' )
+		);
+		add_submenu_page(
+			null,
+			__( 'uxcribe.cl Sync', 'vk7k-wp-sync' ),
+			__( 'Sync', 'vk7k-wp-sync' ),
+			'manage_options',
+			'vk7k-sync',
+			array( $this, 'render_admin_page' )
+		);
 	}
 
 	/**
@@ -127,6 +146,71 @@ class VK7K_Sync_Admin {
 	}
 
 	/**
+	 * Enqueue Block Editor (Gutenberg / FSE) assets for single-content Push/Pull.
+	 */
+	public function enqueue_block_editor_assets() {
+		if ( ! current_user_can( 'edit_posts' ) ) {
+			return;
+		}
+
+		$active_target = VK7K_Sync_Auth::get_active_target();
+		$settings      = VK7K_Sync_Auth::get_settings();
+		$remote_url    = ! empty( $active_target['url'] ) ? $active_target['url'] : ( $settings['remote_url'] ?? '' );
+		$target_name   = ! empty( $active_target['name'] ) ? $active_target['name'] : ( ! empty( $remote_url ) ? wp_parse_url( $remote_url, PHP_URL_HOST ) : '' );
+
+		global $post;
+		$current_post_data = array(
+			'id'    => $post ? (int) $post->ID : 0,
+			'title' => $post ? get_the_title( $post ) : '',
+			'slug'  => $post ? $post->post_name : '',
+			'type'  => $post ? $post->post_type : 'post',
+		);
+
+		wp_enqueue_style(
+			'vk7k-sync-editor-css',
+			VK7K_SYNC_URL . 'admin/css/vk7k-sync-editor.css',
+			array(),
+			VK7K_SYNC_VERSION
+		);
+
+		wp_enqueue_script(
+			'vk7k-sync-editor-js',
+			VK7K_SYNC_URL . 'admin/js/vk7k-sync-editor.js',
+			array( 'wp-plugins', 'wp-element', 'wp-components', 'wp-data', 'wp-i18n' ),
+			VK7K_SYNC_VERSION,
+			true
+		);
+
+		wp_localize_script(
+			'vk7k-sync-editor-js',
+			'vk7kSyncEditor',
+			array(
+				'ajaxUrl'      => admin_url( 'admin-ajax.php' ),
+				'nonce'        => wp_create_nonce( 'vk7k_sync_admin_nonce' ),
+				'remoteUrl'     => $remote_url,
+				'targetName'    => $target_name,
+				'isConfigured'  => ! empty( $remote_url ),
+				'settingsUrl'   => admin_url( 'admin.php?page=uxcribe-sync' ),
+				'pluginVersion' => VK7K_SYNC_VERSION,
+				'post'          => $current_post_data,
+				'i18n'         => array(
+					'pluginTitle'       => __( 'uxcribe.cl Sync', 'vk7k-wp-sync' ),
+					'menuLabel'         => __( 'uxcribe.cl Sync: Push / Pull', 'vk7k-wp-sync' ),
+					'pushToRemote'      => __( 'Push a Remoto', 'vk7k-wp-sync' ),
+					'pullFromRemote'    => __( 'Pull desde Remoto', 'vk7k-wp-sync' ),
+					'syncMedia'         => __( 'Sincronizar medios y adjuntos (imágenes, galerías)', 'vk7k-wp-sync' ),
+					'confirmPull'       => __( '¿Estás seguro de que deseas traer el contenido desde el sitio remoto? Se sobrescribirá el contenido, metadatos y medios locales de este contenido.', 'vk7k-wp-sync' ),
+					'pushing'           => __( 'Subiendo a remoto...', 'vk7k-wp-sync' ),
+					'pulling'           => __( 'Trayendo desde remoto...', 'vk7k-wp-sync' ),
+					'success'           => __( 'Sincronización completada con éxito', 'vk7k-wp-sync' ),
+					'reloadEditor'      => __( 'Recargar Editor', 'vk7k-wp-sync' ),
+					'notConfigured'     => __( 'Servidor remoto no configurado. Configúralo en los ajustes de uxcribe.cl Sync.', 'vk7k-wp-sync' ),
+				),
+			)
+		);
+	}
+
+	/**
 	 * Render Admin Page.
 	 */
 	public function render_admin_page() {
@@ -147,14 +231,91 @@ class VK7K_Sync_Admin {
 		$has_ssh2 = function_exists( 'ssh2_connect' );
 		?>
 		<div class="wrap vk7k-sync-wrap <?php echo 'slave' === $current_role ? 'is-theme-slave' : 'is-theme-master'; ?>" id="vk7k-main-wrap">
-			<header class="vk7k-header">
-				<div class="vk7k-header-brand">
-					<div class="vk7k-logo-badge">UXCRIBE</div>
-					<div class="vk7k-header-title">
-						<h1>uxcribe.cl Sync <span class="vk7k-badge">v<?php echo esc_html( VK7K_SYNC_VERSION ); ?></span></h1>
-						<p class="vk7k-subtitle"><?php esc_html_e( 'Sincronización y clonación bidireccional segura entre entornos WordPress por Uxcribe.cl', 'vk7k-wp-sync' ); ?></p>
+
+			<!-- ============================================== -->
+			<!-- SLAVE / RECEPTOR MINIMAL VIEW (CLIENT SAFE)   -->
+			<!-- ============================================== -->
+			<div id="vk7k-slave-view" style="<?php echo 'slave' === $current_role ? '' : 'display:none;'; ?>">
+				<header class="vk7k-header vk7k-slave-header">
+					<div class="vk7k-header-brand">
+						<div class="vk7k-logo-badge">UXCRIBE</div>
+						<div class="vk7k-header-title">
+							<h1>uxcribe.cl Sync <span class="vk7k-badge">v<?php echo esc_html( VK7K_SYNC_VERSION ); ?></span></h1>
+							<p class="vk7k-subtitle"><?php esc_html_e( 'Servidor Receptor de Sincronización', 'vk7k-wp-sync' ); ?></p>
+						</div>
+					</div>
+					<div class="vk7k-status-pill is-slave">
+						<span class="dot"></span>
+						<span><?php esc_html_e( '📥 Receptor Activo', 'vk7k-wp-sync' ); ?></span>
+					</div>
+				</header>
+
+				<div class="vk7k-slave-minimal-card">
+					<div class="vk7k-slave-hero-icon">
+						<span class="dashicons dashicons-shield-alt"></span>
+					</div>
+					<h2><?php esc_html_e( 'Sitio Receptor Configurado', 'vk7k-wp-sync' ); ?></h2>
+					<p class="vk7k-slave-description">
+						<?php esc_html_e( 'Este sitio web está configurado como receptor para recibir de forma segura actualizaciones de diseño, plantillas y contenidos desde tu entorno de desarrollo o maestro autorizado.', 'vk7k-wp-sync' ); ?>
+					</p>
+
+					<div class="vk7k-slave-key-box">
+						<label for="vk7k-slave-local-key">
+							<strong><?php esc_html_e( 'Clave Secreta de Conexión (Para conectar desde tu Maestro):', 'vk7k-wp-sync' ); ?></strong>
+						</label>
+						<div class="vk7k-input-group">
+							<input type="text" id="vk7k-slave-local-key" class="vk7k-input vk7k-code vk7k-local-key-input" value="<?php echo esc_attr( $local_key ); ?>" readonly />
+							<button type="button" class="button button-primary vk7k-copy-btn" data-target="#vk7k-slave-local-key" title="<?php esc_attr_e( 'Copiar Clave', 'vk7k-wp-sync' ); ?>">
+								<span class="dashicons dashicons-admin-page"></span> <?php esc_html_e( 'Copiar Clave', 'vk7k-wp-sync' ); ?>
+							</button>
+							<button type="button" class="button vk7k-regen-key-btn" title="<?php esc_attr_e( 'Regenerar Clave', 'vk7k-wp-sync' ); ?>">
+								<span class="dashicons dashicons-update"></span>
+							</button>
+						</div>
+						<span class="description"><?php esc_html_e( 'Pega esta clave secreta en el panel de uxcribe.cl Sync de tu WordPress maestro para vincular ambos sitios.', 'vk7k-wp-sync' ); ?></span>
+					</div>
+
+					<div class="vk7k-slave-url-box">
+						<label for="vk7k-slave-site-url"><strong><?php esc_html_e( 'URL de este WordPress:', 'vk7k-wp-sync' ); ?></strong></label>
+						<div class="vk7k-input-group">
+							<input type="text" id="vk7k-slave-site-url" class="vk7k-input vk7k-code" value="<?php echo esc_url( home_url() ); ?>" readonly />
+							<button type="button" class="button vk7k-copy-btn" data-target="#vk7k-slave-site-url" title="<?php esc_attr_e( 'Copiar URL', 'vk7k-wp-sync' ); ?>">
+								<span class="dashicons dashicons-admin-page"></span>
+							</button>
+						</div>
+					</div>
+
+					<div class="vk7k-slave-diag-row">
+						<div class="vk7k-env-diagnostic-pill">
+							<span class="dashicons dashicons-yes-alt" style="color:#10b981;"></span>
+							<span>REST API: <code>/wp-json/vk7k-sync/v1/</code> ✓ • HMAC-SHA256 ✓ • PHP <?php echo esc_html( PHP_VERSION ); ?></span>
+						</div>
+					</div>
+
+					<div class="vk7k-slave-footer-switch">
+						<p class="vk7k-slave-hint">
+							<?php esc_html_e( '¿Necesitas enviar datos o clonar desde este sitio hacia otro?', 'vk7k-wp-sync' ); ?>
+						</p>
+						<button type="button" id="vk7k-btn-enable-master" class="button button-secondary">
+							<span class="dashicons dashicons-admin-generic"></span>
+							<?php esc_html_e( 'Activar Modo Maestro (Configuración Avanzada)', 'vk7k-wp-sync' ); ?>
+						</button>
 					</div>
 				</div>
+			</div>
+
+			<!-- ============================================== -->
+			<!-- MASTER FULL VIEW (ADVANCED WIZARD & TOOLS)    -->
+			<!-- ============================================== -->
+			<div id="vk7k-master-view" style="<?php echo 'master' === $current_role ? '' : 'display:none;'; ?>">
+				<header class="vk7k-header">
+					<div class="vk7k-header-brand">
+						<div class="vk7k-logo-badge">UXCRIBE</div>
+						<div class="vk7k-header-title">
+							<h1>uxcribe.cl Sync <span class="vk7k-badge">v<?php echo esc_html( VK7K_SYNC_VERSION ); ?></span></h1>
+							<p class="vk7k-subtitle"><?php esc_html_e( 'Sincronización y clonación bidireccional segura entre entornos WordPress por Uxcribe.cl', 'vk7k-wp-sync' ); ?></p>
+						</div>
+					</div>
 				<div class="vk7k-header-controls">
 					<!-- Remote Profile Switcher -->
 					<div class="vk7k-target-selector-wrap">
@@ -203,6 +364,10 @@ class VK7K_Sync_Admin {
 						<span class="dot"></span>
 						<span id="vk7k-header-role-text"><?php echo 'slave' === $current_role ? esc_html__( '📥 Modo: ESCLAVO (Receptor)', 'vk7k-wp-sync' ) : esc_html__( '👑 Modo: MAESTRO (Fuente)', 'vk7k-wp-sync' ); ?></span>
 					</div>
+
+					<button type="button" id="vk7k-btn-switch-to-slave" class="button button-small" title="<?php esc_attr_e( 'Cambiar a Modo Receptor (Vista Simple para Clientes)', 'vk7k-wp-sync' ); ?>">
+						<span class="dashicons dashicons-hidden"></span> <?php esc_html_e( 'Modo Receptor', 'vk7k-wp-sync' ); ?>
+					</button>
 				</div>
 			</header>
 
@@ -448,26 +613,15 @@ class VK7K_Sync_Admin {
 							<div class="vk7k-type-check-indicator"><span class="dashicons dashicons-yes-alt"></span></div>
 						</div>
 
-						<!-- Card 4: Advanced Custom -->
-						<div class="vk7k-sync-type-card is-advanced" data-type="custom_advanced">
-							<div class="vk7k-type-badge-pill is-advanced"><?php esc_html_e( 'Control Total', 'vk7k-wp-sync' ); ?></div>
-							<div class="vk7k-type-icon">⚙️</div>
-							<h3 class="vk7k-type-title"><?php esc_html_e( 'Tablas y Servidor', 'vk7k-wp-sync' ); ?></h3>
-							<p class="vk7k-type-desc">
-								<?php esc_html_e( 'Sincronización masiva por reemplazo de tablas de base de datos (staging swap), usuarios, plugins y temas completos.', 'vk7k-wp-sync' ); ?>
-							</p>
-							<div class="vk7k-type-check-indicator"><span class="dashicons dashicons-yes-alt"></span></div>
-						</div>
-
-						<!-- Card 5: Granular DataGrid & Recipes (NEW) -->
-						<div class="vk7k-sync-type-card is-granular" id="vk7k-card-open-granular" data-type="granular_recipes" style="border-color: #3b82f6; background: #eff6ff;">
+						<!-- Card 5: Granular DataGrid & Recipes -->
+						<div class="vk7k-sync-type-card is-granular is-selected" id="vk7k-card-open-granular" data-type="granular_recipes" style="border-color: #3b82f6; background: #eff6ff;">
 							<div class="vk7k-type-badge-pill" style="background:#3b82f6; color:#fff;"><?php esc_html_e( 'Nivel Fila / Excel', 'vk7k-wp-sync' ); ?></div>
 							<div class="vk7k-type-icon">📑</div>
 							<h3 class="vk7k-type-title" style="color: #1e40af;">
 								<?php esc_html_e( 'Editor Granular & Recetas', 'vk7k-wp-sync' ); ?>
 							</h3>
 							<p class="vk7k-type-desc">
-								<?php esc_html_e( 'Selecciona entradas, páginas, productos, menús y opciones específicas mediante un DataGrid interactivo y crea recetas reutilizables protegidas.', 'vk7k-wp-sync' ); ?>
+								<?php esc_html_e( 'Selecciona páginas, posts, menús, opciones, plugins y temas mediante el DataGrid interactivo y ejecuta o guarda recetas reutilizables.', 'vk7k-wp-sync' ); ?>
 							</p>
 							<button type="button" class="button button-primary vk7k-btn-open-granular-modal" style="width:100%; margin-top:8px;">
 								<span class="dashicons dashicons-table-col-after" style="margin-top:2px;"></span> <?php esc_html_e( 'Abrir Selector Granular', 'vk7k-wp-sync' ); ?>
@@ -507,226 +661,19 @@ class VK7K_Sync_Admin {
 							</div>
 							<div id="vk7k-preset-summary-details" class="vk7k-preset-summary-details"></div>
 						</div>
-						<button type="button" id="vk7k-btn-view-advanced" class="button button-small button-secondary">
-							<span class="dashicons dashicons-admin-generic"></span> <?php esc_html_e( 'Ver / Ajustar en Modo Avanzado', 'vk7k-wp-sync' ); ?>
+						<button type="button" class="button button-small button-secondary vk7k-btn-open-granular-modal">
+							<span class="dashicons dashicons-table-col-after"></span> <?php esc_html_e( 'Personalizar en Editor Granular', 'vk7k-wp-sync' ); ?>
 						</button>
 					</div>
 
-					<!-- Granular Advanced Panel (Initially Hidden) -->
-					<div id="vk7k-advanced-panel" style="display:none; margin-top: 20px;">
-						<div class="vk7k-advanced-panel-header">
-							<h4><span class="dashicons dashicons-admin-settings"></span> <?php esc_html_e( 'Ajustes Granulares de Sincronización', 'vk7k-wp-sync' ); ?></h4>
-							<p class="description"><?php esc_html_e( 'Marca o desmarca los componentes individuales según tus necesidades específicas.', 'vk7k-wp-sync' ); ?></p>
-						</div>
-
-						<div class="vk7k-accordion-group">
-						
-						<!-- 1. Database Block (Positive Logic) -->
-						<div class="vk7k-accordion-item is-open">
-							<div class="vk7k-accordion-header">
-								<label class="vk7k-master-check">
-									<input type="checkbox" id="vk7k-opt-db" checked />
-									<strong class="vk7k-acc-title" id="vk7k-title-db" data-base-title="<?php esc_attr_e( 'Base de Datos (WooCommerce, Posts, Meta, Opciones, FSE)', 'vk7k-wp-sync' ); ?>">
-										<?php echo 'slave' === $current_role ? esc_html__( '⬇️ Traer Base de Datos', 'vk7k-wp-sync' ) : esc_html__( '⬆️ Enviar Base de Datos', 'vk7k-wp-sync' ); ?>
-									</strong>
-								</label>
-								<span class="vk7k-acc-arrow dashicons dashicons-arrow-down-alt2"></span>
-							</div>
-							<div class="vk7k-accordion-body">
-								<div class="vk7k-db-subgroups-grid">
-									
-									<!-- Subgroup A: General Content -->
-									<div class="vk7k-db-subgroup-card">
-										<h4 class="vk7k-db-subgroup-title">
-											<span class="dashicons dashicons-admin-post"></span>
-											<?php esc_html_e( 'Contenido General y Configuración', 'vk7k-wp-sync' ); ?>
-										</h4>
-										<div class="vk7k-db-subgroup-options">
-											<label class="vk7k-sub-check">
-												<input type="checkbox" id="vk7k-opt-sync-content" checked />
-												<span><?php esc_html_e( 'Entradas, Páginas, Menús y Plantillas (wp_posts, wp_postmeta)', 'vk7k-wp-sync' ); ?></span>
-											</label>
-											<label class="vk7k-sub-check">
-												<input type="checkbox" id="vk7k-opt-sync-options" checked />
-												<span><?php esc_html_e( 'Opciones y Plantillas FSE (wp_options)', 'vk7k-wp-sync' ); ?></span>
-											</label>
-											<label class="vk7k-sub-check">
-												<input type="checkbox" id="vk7k-opt-sync-taxonomies" checked />
-												<span><?php esc_html_e( 'Categorías y Taxonomías (wp_terms, taxonomies)', 'vk7k-wp-sync' ); ?></span>
-											</label>
-											<label class="vk7k-sub-check">
-												<input type="checkbox" id="vk7k-opt-sync-comments" checked />
-												<span><?php esc_html_e( 'Comentarios y Valoraciones (wp_comments)', 'vk7k-wp-sync' ); ?></span>
-											</label>
-										</div>
-									</div>
-
-									<!-- Subgroup B: WooCommerce & Commerce -->
-									<div class="vk7k-db-subgroup-card">
-										<h4 class="vk7k-db-subgroup-title">
-											<span class="dashicons dashicons-cart"></span>
-											<?php esc_html_e( 'WooCommerce y Comercio', 'vk7k-wp-sync' ); ?>
-										</h4>
-										<div class="vk7k-db-subgroup-options">
-											<label class="vk7k-sub-check">
-												<input type="checkbox" id="vk7k-opt-sync-wc-orders" />
-												<span>
-													<strong><?php esc_html_e( 'Pedidos y Ventas (wp_wc_orders, items, cupones)', 'vk7k-wp-sync' ); ?></strong>
-													<em class="vk7k-tag-subnote"><?php esc_html_e( '(Desmarcado por defecto para no alterar ventas)', 'vk7k-wp-sync' ); ?></em>
-												</span>
-											</label>
-											<label class="vk7k-sub-check">
-												<input type="checkbox" id="vk7k-opt-sync-users" />
-												<span>
-													<strong><?php esc_html_e( 'Cuentas de Usuarios y Clientes (wp_users, usermeta)', 'vk7k-wp-sync' ); ?></strong>
-													<em class="vk7k-tag-subnote"><?php esc_html_e( '(Desmarcado por seguridad: preserva administradores y sesiones locales)', 'vk7k-wp-sync' ); ?></em>
-												</span>
-											</label>
-										</div>
-									</div>
-
-									<!-- Subgroup C: Logs & Transients -->
-									<div class="vk7k-db-subgroup-card is-logs">
-										<h4 class="vk7k-db-subgroup-title">
-											<span class="dashicons dashicons-warning"></span>
-											<?php esc_html_e( 'Logs y Registros Temporales', 'vk7k-wp-sync' ); ?>
-										</h4>
-										<div class="vk7k-db-subgroup-options">
-											<label class="vk7k-sub-check">
-												<input type="checkbox" id="vk7k-opt-sync-logs" />
-												<span>
-													<?php esc_html_e( 'Transferir Logs de ActionScheduler y WooCommerce', 'vk7k-wp-sync' ); ?>
-													<em class="vk7k-tag-warn"><?php esc_html_e( 'No recomendado (puede ralentizar)', 'vk7k-wp-sync' ); ?></em>
-												</span>
-											</label>
-										</div>
-									</div>
-
-								</div>
-								<p class="description" style="margin-top: 10px;">
-									<span class="dashicons dashicons-yes-alt" style="color:#0d9488;font-size:16px;vertical-align:middle;"></span>
-									<?php esc_html_e( 'Incluye reemplazo seguro de URLs serializadas en todas las opciones, posts y metadatos.', 'vk7k-wp-sync' ); ?>
-								</p>
-							</div>
-						</div>
-
-						<!-- 2. Media Uploads Block -->
-						<div class="vk7k-accordion-item is-open">
-							<div class="vk7k-accordion-header">
-								<label class="vk7k-master-check">
-									<input type="checkbox" id="vk7k-opt-uploads" checked />
-									<strong class="vk7k-acc-title" id="vk7k-title-uploads" data-base-title="<?php esc_attr_e( 'Archivos Multimedia (wp-content/uploads)', 'vk7k-wp-sync' ); ?>">
-										<?php echo 'slave' === $current_role ? esc_html__( '⬇️ Traer Archivos Multimedia', 'vk7k-wp-sync' ) : esc_html__( '⬆️ Enviar Archivos Multimedia', 'vk7k-wp-sync' ); ?>
-									</strong>
-								</label>
-								<span class="vk7k-acc-arrow dashicons dashicons-arrow-down-alt2"></span>
-							</div>
-							<div class="vk7k-accordion-body">
-								<div class="vk7k-media-filter-row">
-									<label>
-										<input type="radio" name="media_filter" value="all" checked />
-										<?php esc_html_e( 'Toda la biblioteca de medios', 'vk7k-wp-sync' ); ?>
-									</label>
-									<label>
-										<input type="radio" name="media_filter" value="current_year" />
-										<?php esc_html_e( 'Solo archivos del año actual (' . date( 'Y' ) . ')', 'vk7k-wp-sync' ); ?>
-									</label>
-								</div>
-							</div>
-						</div>
-
-						<!-- 3. Selective Plugins Block -->
-						<div class="vk7k-accordion-item is-open">
-							<div class="vk7k-accordion-header">
-								<label class="vk7k-master-check">
-									<input type="checkbox" id="vk7k-opt-plugins" checked />
-									<strong class="vk7k-acc-title" id="vk7k-title-plugins" data-base-title="<?php esc_attr_e( 'Plugins Personalizados y de la Suite', 'vk7k-wp-sync' ); ?>">
-										<?php echo 'slave' === $current_role ? esc_html__( '⬇️ Traer Plugins', 'vk7k-wp-sync' ) : esc_html__( '⬆️ Enviar Plugins', 'vk7k-wp-sync' ); ?>
-									</strong>
-								</label>
-								<span class="vk7k-acc-arrow dashicons dashicons-arrow-down-alt2"></span>
-							</div>
-							<div class="vk7k-accordion-body">
-								<div class="vk7k-plugins-toolbar">
-									<div class="vk7k-plugins-search-wrap">
-										<input type="text" id="vk7k-plugin-search" placeholder="<?php esc_attr_e( 'Filtrar plugins...', 'vk7k-wp-sync' ); ?>" class="vk7k-search-input" />
-									</div>
-									<div class="vk7k-plugins-actions">
-										<button type="button" class="button button-small" id="vk7k-plugins-select-all"><?php esc_html_e( 'Todos', 'vk7k-wp-sync' ); ?></button>
-										<button type="button" class="button button-small" id="vk7k-plugins-select-active"><?php esc_html_e( 'Solo Activos', 'vk7k-wp-sync' ); ?></button>
-										<button type="button" class="button button-small" id="vk7k-plugins-deselect"><?php esc_html_e( 'Ninguno', 'vk7k-wp-sync' ); ?></button>
-									</div>
-								</div>
-								<div class="vk7k-plugin-list">
-									<?php foreach ( $plugins as $p ) : ?>
-										<label class="vk7k-plugin-item">
-											<input type="checkbox" class="vk7k-plugin-cb" value="<?php echo esc_attr( $p['slug'] ); ?>" <?php checked( $p['is_active'] ); ?> data-active="<?php echo $p['is_active'] ? '1' : '0'; ?>" />
-											<span class="vk7k-plugin-name"><?php echo esc_html( $p['name'] ); ?></span>
-											<div class="vk7k-item-badges">
-												<?php if ( ! empty( $p['version'] ) ) : ?>
-													<span class="vk7k-badge-ver">v<?php echo esc_html( $p['version'] ); ?></span>
-												<?php endif; ?>
-												<?php if ( $p['is_active'] ) : ?>
-													<span class="vk7k-badge-active"><?php esc_html_e( 'Activo', 'vk7k-wp-sync' ); ?></span>
-												<?php endif; ?>
-											</div>
-										</label>
-									<?php endforeach; ?>
-								</div>
-							</div>
-						</div>
-
-						<!-- 4. Themes Block -->
-						<div class="vk7k-accordion-item is-open">
-							<div class="vk7k-accordion-header">
-								<label class="vk7k-master-check">
-									<input type="checkbox" id="vk7k-opt-themes" checked />
-									<strong class="vk7k-acc-title" id="vk7k-title-themes" data-base-title="<?php esc_attr_e( 'Temas y Plantillas FSE (wp-content/themes)', 'vk7k-wp-sync' ); ?>">
-										<?php echo 'slave' === $current_role ? esc_html__( '⬇️ Traer Temas y Plantillas', 'vk7k-wp-sync' ) : esc_html__( '⬆️ Enviar Temas y Plantillas', 'vk7k-wp-sync' ); ?>
-									</strong>
-								</label>
-								<span class="vk7k-acc-arrow dashicons dashicons-arrow-down-alt2"></span>
-							</div>
-							<div class="vk7k-accordion-body">
-								<div class="vk7k-theme-list">
-									<?php foreach ( $themes as $t ) : ?>
-										<label class="vk7k-theme-item">
-											<input type="checkbox" class="vk7k-theme-cb" value="<?php echo esc_attr( $t['slug'] ); ?>" <?php checked( $t['is_active'] ); ?> />
-											<span class="vk7k-theme-name"><?php echo esc_html( $t['name'] ); ?></span>
-											<div class="vk7k-item-badges">
-												<?php if ( ! empty( $t['is_fse'] ) ) : ?>
-													<span class="vk7k-badge-fse"><?php esc_html_e( 'FSE', 'vk7k-wp-sync' ); ?></span>
-												<?php endif; ?>
-												<?php if ( $t['is_active'] ) : ?>
-													<span class="vk7k-badge-active"><?php esc_html_e( 'Tema Activo', 'vk7k-wp-sync' ); ?></span>
-												<?php endif; ?>
-											</div>
-										</label>
-									<?php endforeach; ?>
-								</div>
-							</div>
-						</div>
-
-						<!-- 5. Maintenance Mode Block -->
-						<div class="vk7k-accordion-item is-open">
-							<div class="vk7k-accordion-header">
-								<label class="vk7k-master-check">
-									<input type="checkbox" id="vk7k-opt-maintenance" <?php checked( ! isset( $settings['sync_maintenance'] ) || ! empty( $settings['sync_maintenance'] ) ); ?> />
-									<strong class="vk7k-acc-title">
-										🔒 <?php esc_html_e( 'Modo Mantenimiento en Sitio Receptor', 'vk7k-wp-sync' ); ?>
-									</strong>
-								</label>
-								<span class="vk7k-acc-arrow dashicons dashicons-arrow-down-alt2"></span>
-							</div>
-							<div class="vk7k-accordion-body">
-								<p class="description" style="margin: 0; padding: 4px 0;">
-									<?php esc_html_e( 'Activa automáticamente el modo mantenimiento en el sitio receptor mientras se actualizan los datos para prevenir errores o accesos de usuarios. Se remueve automáticamente al finalizar.', 'vk7k-wp-sync' ); ?>
-								</p>
-							</div>
-						</div>
+					<!-- Maintenance Mode Row -->
+					<div class="vk7k-maintenance-toggle-row" style="margin: 15px 0 20px 0; padding: 12px 16px; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+						<label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 0.9rem; font-weight: 500;">
+							<input type="checkbox" id="vk7k-opt-maintenance" <?php checked( ! isset( $settings['sync_maintenance'] ) || ! empty( $settings['sync_maintenance'] ) ); ?> />
+							<span>🔒 <?php esc_html_e( 'Activar Modo Mantenimiento en el sitio receptor durante la sincronización', 'vk7k-wp-sync' ); ?></span>
+						</label>
+						<span class="description" style="color: #64748b; font-size: 0.8rem;"><?php esc_html_e( 'Protege visitantes y se libera automáticamente al finalizar.', 'vk7k-wp-sync' ); ?></span>
 					</div>
-				</div>
-				<!-- End Granular Advanced Panel -->
 
 				<!-- ACTION EXECUTION SECTION -->
 					<div class="vk7k-action-section">
@@ -1129,6 +1076,14 @@ class VK7K_Sync_Admin {
 									<span class="dashicons dashicons-admin-settings"></span> <?php esc_html_e( 'Opciones (wp_options)', 'vk7k-wp-sync' ); ?>
 									<span class="vk7k-tab-count" id="count-options">0</span>
 								</button>
+								<button type="button" class="vk7k-tab-btn" data-tab="plugins">
+									<span class="dashicons dashicons-admin-plugins"></span> <?php esc_html_e( 'Plugins', 'vk7k-wp-sync' ); ?>
+									<span class="vk7k-tab-count" id="count-plugins">0</span>
+								</button>
+								<button type="button" class="vk7k-tab-btn" data-tab="themes">
+									<span class="dashicons dashicons-admin-appearance"></span> <?php esc_html_e( 'Temas', 'vk7k-wp-sync' ); ?>
+									<span class="vk7k-tab-count" id="count-themes">0</span>
+								</button>
 							</div>
 
 							<!-- Search Bar & Sub-Filters -->
@@ -1137,6 +1092,11 @@ class VK7K_Sync_Admin {
 									<option value="post"><?php esc_html_e( 'Entradas (post)', 'vk7k-wp-sync' ); ?></option>
 									<option value="product"><?php esc_html_e( 'Productos (product)', 'vk7k-wp-sync' ); ?></option>
 								</select>
+								<div id="vk7k-plugin-filter-actions" style="display:none; align-items: center; gap: 4px;">
+									<button type="button" class="button button-small" id="vk7k-grid-plugins-all"><?php esc_html_e( 'Todos', 'vk7k-wp-sync' ); ?></button>
+									<button type="button" class="button button-small" id="vk7k-grid-plugins-active"><?php esc_html_e( 'Solo Activos', 'vk7k-wp-sync' ); ?></button>
+									<button type="button" class="button button-small" id="vk7k-grid-plugins-none"><?php esc_html_e( 'Ninguno', 'vk7k-wp-sync' ); ?></button>
+								</div>
 								<div class="vk7k-search-box" style="position: relative;">
 									<input type="text" id="vk7k-grid-search" placeholder="<?php esc_attr_e( 'Buscar en lista...', 'vk7k-wp-sync' ); ?>" style="height: 32px; font-size: 0.85rem; padding-left: 28px; width: 220px; border-radius: 6px; border: 1px solid #cbd5e1;" />
 									<span class="dashicons dashicons-search" style="position: absolute; left: 6px; top: 7px; color: #94a3b8; font-size: 16px;"></span>
@@ -1241,7 +1201,8 @@ class VK7K_Sync_Admin {
 					</div>
 				</div>
 			</div>
-		</div>
+			</div><!-- /#vk7k-master-view -->
+		</div><!-- /#vk7k-main-wrap -->
 		<?php
 	}
 }

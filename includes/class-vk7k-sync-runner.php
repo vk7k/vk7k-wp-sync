@@ -20,10 +20,21 @@ class VK7K_Sync_Runner {
 		$settings = VK7K_Sync_Auth::get_settings();
 
 		if ( empty( $remote_url ) ) {
-			$remote_url = $settings['remote_url'];
+			$active_target = VK7K_Sync_Auth::get_active_target();
+			if ( ! empty( $active_target['url'] ) ) {
+				$remote_url = $active_target['url'];
+				if ( empty( $secret_key ) && ! empty( $active_target['remote_secret_key'] ) ) {
+					$secret_key = $active_target['remote_secret_key'];
+				}
+				if ( empty( $remote_ip ) && ! empty( $active_target['ip'] ) ) {
+					$remote_ip = $active_target['ip'];
+				}
+			} else {
+				$remote_url = $settings['remote_url'] ?? '';
+			}
 		}
 		if ( empty( $secret_key ) ) {
-			$secret_key = ! empty( $settings['remote_secret_key'] ) ? $settings['remote_secret_key'] : $settings['local_secret_key'];
+			$secret_key = ! empty( $settings['remote_secret_key'] ) ? $settings['remote_secret_key'] : ( $settings['local_secret_key'] ?? '' );
 		}
 		if ( empty( $remote_ip ) ) {
 			$remote_ip = ! empty( $settings['remote_ip'] ) ? $settings['remote_ip'] : '';
@@ -130,6 +141,37 @@ class VK7K_Sync_Runner {
 	}
 
 	/**
+	 * Backward compatibility wrapper for remote POST requests.
+	 *
+	 * @deprecated 1.6.0 Use VK7K_Sync_Client::post() instead.
+	 *
+	 * @param string       $remote_url
+	 * @param string       $endpoint
+	 * @param array|string $body
+	 * @param string       $secret_key
+	 * @return array|WP_Error
+	 */
+	public static function remote_post( $remote_url, $endpoint, $body = array(), $secret_key = '' ) {
+		return self::send_remote_request( $endpoint, $body, $remote_url, $secret_key );
+	}
+
+	/**
+	 * Backward compatibility wrapper for raw/binary remote POST requests.
+	 *
+	 * @deprecated 1.6.0 Use VK7K_Sync_Client::post_binary() instead.
+	 *
+	 * @param string $remote_url
+	 * @param string $endpoint
+	 * @param string $body
+	 * @param string $secret_key
+	 * @param array  $headers
+	 * @return array|WP_Error
+	 */
+	public static function remote_post_raw( $remote_url, $endpoint, $body = '', $secret_key = '', $headers = array() ) {
+		return VK7K_Sync_Client::post_binary( $endpoint, $body, $remote_url, $secret_key );
+	}
+
+	/**
 	 * Calculate optimal chunk and batch sizes dynamically based on local and remote server metrics.
 	 */
 	public static function get_optimal_batch_settings( $remote_info = array() ) {
@@ -199,11 +241,9 @@ class VK7K_Sync_Runner {
 	}
 
 	/**
-	 * Run single database table chunk sync step with recursive serialized replacement.
-	 */
-	/**
 	 * Push a single post (ID + postmeta + terms + term_relationships) directly via REST API.
 	 *
+	 * @deprecated 1.6.0 Use VK7K_Sync_Granular::export_package() and VK7K_Sync_Granular::import_package() instead for full dependency and media sync.
 	 * @param int $post_id
 	 * @return array
 	 */
@@ -214,6 +254,7 @@ class VK7K_Sync_Runner {
 	/**
 	 * Push multiple posts by ID (posts + postmeta + terms + term_relationships) via REST API.
 	 *
+	 * @deprecated 1.6.0 Prefer VK7K_Sync_Granular methods for full asset handling.
 	 * @param array  $post_ids
 	 * @param string $purge_post_type Optional post_type to clean on remote before inserting.
 	 * @return array
@@ -362,7 +403,7 @@ class VK7K_Sync_Runner {
 	 * @param bool   $activate    Whether to activate the plugin on remote after uploading.
 	 * @return array
 	 */
-	public static function push_plugin( $plugin_slug, $activate = true ) {
+	public static function push_plugin( $plugin_slug, $activate = true, $remote_url = '', $secret_key = '', $remote_ip = '' ) {
 		$plugin_slug = sanitize_file_name( $plugin_slug );
 		if ( empty( $plugin_slug ) ) {
 			return array( 'success' => false, 'message' => 'Slug de plugin inválido.' );
@@ -375,6 +416,9 @@ class VK7K_Sync_Runner {
 				'options'    => array(
 					'selected_plugins' => array( $plugin_slug ),
 				),
+				'remote_url' => $remote_url,
+				'secret_key' => $secret_key,
+				'remote_ip'  => $remote_ip,
 			)
 		);
 
@@ -389,9 +433,12 @@ class VK7K_Sync_Runner {
 		while ( $offset < $total_files ) {
 			$step = self::step_sync_files_chunk(
 				array(
-					'mode'     => 'push',
-					'offset'   => $offset,
-					'chunk_mb' => 8,
+					'mode'       => 'push',
+					'offset'     => $offset,
+					'chunk_mb'   => 8,
+					'remote_url' => $remote_url,
+					'secret_key' => $secret_key,
+					'remote_ip'  => $remote_ip,
 				)
 			);
 			if ( empty( $step['success'] ) ) {
@@ -423,7 +470,10 @@ class VK7K_Sync_Runner {
 				array(
 					'plugin_file' => $plugin_file,
 					'action'      => 'activate',
-				)
+				),
+				$remote_url,
+				$secret_key,
+				$remote_ip
 			);
 			if ( is_wp_error( $activation_res ) ) {
 				return array(
@@ -454,9 +504,12 @@ class VK7K_Sync_Runner {
 	 *
 	 * @param string $theme_slug Folder slug of the theme (e.g. 'fusem-2026').
 	 * @param bool   $activate   Whether to activate the theme on remote after uploading.
+	 * @param string $remote_url Remote URL override.
+	 * @param string $secret_key Remote secret key override.
+	 * @param string $remote_ip  Remote IP override.
 	 * @return array
 	 */
-	public static function push_theme( $theme_slug, $activate = true ) {
+	public static function push_theme( $theme_slug, $activate = true, $remote_url = '', $secret_key = '', $remote_ip = '' ) {
 		$theme_slug = sanitize_file_name( $theme_slug );
 		if ( empty( $theme_slug ) ) {
 			return array( 'success' => false, 'message' => 'Slug de tema inválido.' );
@@ -469,6 +522,9 @@ class VK7K_Sync_Runner {
 				'options'    => array(
 					'selected_themes' => array( $theme_slug ),
 				),
+				'remote_url' => $remote_url,
+				'secret_key' => $secret_key,
+				'remote_ip'  => $remote_ip,
 			)
 		);
 
@@ -483,9 +539,12 @@ class VK7K_Sync_Runner {
 		while ( $offset < $total_files ) {
 			$step = self::step_sync_files_chunk(
 				array(
-					'mode'     => 'push',
-					'offset'   => $offset,
-					'chunk_mb' => 8,
+					'mode'       => 'push',
+					'offset'     => $offset,
+					'chunk_mb'   => 8,
+					'remote_url' => $remote_url,
+					'secret_key' => $secret_key,
+					'remote_ip'  => $remote_ip,
 				)
 			);
 			if ( empty( $step['success'] ) ) {
@@ -507,7 +566,10 @@ class VK7K_Sync_Runner {
 				array(
 					'stylesheet' => $theme_slug,
 					'theme_mods' => is_array( $theme_mods ) ? $theme_mods : array(),
-				)
+				),
+				$remote_url,
+				$secret_key,
+				$remote_ip
 			);
 			if ( is_wp_error( $activation_res ) ) {
 				return array(

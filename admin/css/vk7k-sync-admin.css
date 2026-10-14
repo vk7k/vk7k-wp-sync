@@ -1480,5 +1480,109 @@
 .vk7k-status-badge.private { background: #fee2e2; color: #b91c1c; }
 .vk7k-status-badge.other { background: #f1f5f9; color: #64748b; }
 
+/* ========================================================
+   Slave / Receptor Minimal View (Client Safe & Clean)
+   ======================================================== */
+.vk7k-slave-header {
+	margin-bottom: 24px;
+}
+
+.vk7k-slave-minimal-card {
+	background: #ffffff;
+	border: 1px solid var(--vk7k-border);
+	border-radius: 14px;
+	padding: 40px 36px 32px;
+	max-width: 660px;
+	margin: 20px auto 40px auto;
+	box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04);
+	text-align: center;
+}
+
+.vk7k-slave-hero-icon {
+	width: 68px;
+	height: 68px;
+	margin: 0 auto 16px auto;
+	background: #f0fdfa;
+	border: 2px solid #99f6e4;
+	border-radius: 50%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: #0d9488;
+}
+
+.vk7k-slave-hero-icon .dashicons {
+	font-size: 36px;
+	width: 36px;
+	height: 36px;
+}
+
+.vk7k-slave-minimal-card h2 {
+	font-size: 1.45rem;
+	font-weight: 700;
+	color: #0f172a;
+	margin: 0 0 10px 0;
+}
+
+.vk7k-slave-description {
+	font-size: 0.95rem;
+	line-height: 1.6;
+	color: #64748b;
+	margin: 0 auto 24px auto;
+	max-width: 560px;
+}
+
+.vk7k-slave-key-box,
+.vk7k-slave-url-box {
+	text-align: left;
+	background: #f8fafc;
+	border: 1px solid #e2e8f0;
+	border-radius: 10px;
+	padding: 16px 18px;
+	margin-bottom: 16px;
+}
+
+.vk7k-slave-key-box label,
+.vk7k-slave-url-box label {
+	display: block;
+	font-size: 0.85rem;
+	color: #334155;
+	margin-bottom: 8px;
+}
+
+.vk7k-slave-key-box .description {
+	display: block;
+	margin-top: 8px;
+	font-size: 0.8rem;
+	color: #64748b;
+}
+
+.vk7k-slave-diag-row {
+	display: flex;
+	justify-content: center;
+	margin: 20px 0 24px 0;
+}
+
+.vk7k-slave-footer-switch {
+	border-top: 1px dashed #e2e8f0;
+	padding-top: 20px;
+	margin-top: 24px;
+}
+
+.vk7k-slave-hint {
+	font-size: 0.85rem;
+	color: #94a3b8;
+	margin-bottom: 12px;
+}
+
+#vk7k-btn-enable-master.button {
+	height: 38px;
+	line-height: 36px;
+	padding: 0 18px;
+	font-weight: 600;
+	border-radius: 6px;
+}
+
+
 
 

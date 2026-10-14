@@ -11,6 +11,16 @@
 	let pendingSyncMode = null;
 	let selectedSyncType = null;
 	let initialCheckTimer = null;
+	let currentSelection = {
+		posts: [],
+		menus: [],
+		taxonomies: [],
+		terms: [],
+		options: [],
+		plugins: [],
+		themes: [],
+		sync_media: true
+	};
 
 	$(document).ready(function() {
 		initClipboard();
@@ -82,10 +92,11 @@
 	}
 
 	function initClipboard() {
-		$('.vk7k-copy-btn').on('click', function(e) {
+		$(document).on('click', '.vk7k-copy-btn', function(e) {
 			e.preventDefault();
 			const target = $(this).data('target');
 			const input = $(target)[0];
+			if (!input) return;
 			input.select();
 			input.setSelectionRange(0, 99999);
 			navigator.clipboard.writeText(input.value).then(function() {
@@ -100,7 +111,7 @@
 	}
 
 	function initRegenerateKey() {
-		$('#vk7k-regen-key-btn').on('click', function(e) {
+		$(document).on('click', '#vk7k-regen-key-btn, .vk7k-regen-key-btn', function(e) {
 			e.preventDefault();
 			if (!confirm('¿Estás seguro de regenerar la clave secreta? Deberás actualizarla en el sitio remoto si este se conecta a local.')) {
 				return;
@@ -114,7 +125,7 @@
 			}, function(res) {
 				$btn.prop('disabled', false);
 				if (res.success && res.data.key) {
-					$('#vk7k-local-key').val(res.data.key);
+					$('#vk7k-local-key, #vk7k-slave-local-key, .vk7k-local-key-input').val(res.data.key);
 					alert('Nueva clave local generada.');
 				}
 			});
@@ -170,6 +181,8 @@
 			const $wrap = $('#vk7k-main-wrap');
 			const $pill = $('#vk7k-header-role-pill');
 			const $pillText = $('#vk7k-header-role-text');
+			const $slaveView = $('#vk7k-slave-view');
+			const $masterView = $('#vk7k-master-view');
 
 			$('.vk7k-role-card').removeClass('is-selected');
 			$(`.vk7k-role-card[data-role="${role}"]`).addClass('is-selected');
@@ -178,6 +191,9 @@
 
 			if (role === 'master') {
 				$wrap.removeClass('is-theme-slave').addClass('is-theme-master');
+				$slaveView.hide();
+				$masterView.fadeIn(200);
+
 				$pill.removeClass('is-slave').addClass('is-master');
 				$pillText.text(i18n.roleMaster || '👑 Modo: MAESTRO (Fuente)');
 
@@ -195,6 +211,9 @@
 				$('#vk7k-btn-pull').prop('disabled', true).addClass('is-disabled').attr('title', i18n.pullDisabledForMaster || 'Bloqueado en modo Maestro para proteger este sitio.');
 			} else {
 				$wrap.removeClass('is-theme-master').addClass('is-theme-slave');
+				$masterView.hide();
+				$slaveView.fadeIn(200);
+
 				$pill.removeClass('is-master').addClass('is-slave');
 				$pillText.text(i18n.roleSlave || '📥 Modo: ESCLAVO (Receptor)');
 
@@ -223,6 +242,22 @@
 			}
 		}
 
+		// Activate master mode from slave minimal view
+		$(document).on('click', '#vk7k-btn-enable-master', function(e) {
+			e.preventDefault();
+			if (confirm('¿Deseas activar el Modo Maestro en este sitio? Esto mostrará todas las opciones avanzadas para sincronizar, clonar o enviar datos hacia otros servidores.')) {
+				applyRoleUi('master', true);
+			}
+		});
+
+		// Switch back to slave minimal view from master view header
+		$(document).on('click', '#vk7k-btn-switch-to-slave', function(e) {
+			e.preventDefault();
+			if (confirm('¿Cambiar a Modo Receptor (Esclavo)? Se simplificará la interfaz de este sitio para que muestre únicamente la clave secreta y el estado receptor.')) {
+				applyRoleUi('slave', true);
+			}
+		});
+
 		$('input[name="role_toggle"]').on('change', function() {
 			const selectedRole = $(this).val();
 			applyRoleUi(selectedRole, true);
@@ -235,7 +270,8 @@
 		});
 
 		// Init on load
-		applyRoleUi($('#vk7k-role-select').val() || 'master', false);
+		const currentRole = $('#vk7k-role-select').val() || (vk7kSyncData && vk7kSyncData.role) || 'master';
+		applyRoleUi(currentRole, false);
 	}
 
 	function showConnectionAlert(type, message) {
@@ -250,6 +286,11 @@
 		if (initialCheckTimer) {
 			clearTimeout(initialCheckTimer);
 			initialCheckTimer = null;
+		}
+
+		// In slave mode, this site only listens and does not ping remote
+		if ($('#vk7k-role-select').val() === 'slave') {
+			return;
 		}
 
 		const remoteUrl = $('#vk7k-remote-url').val();
@@ -845,15 +886,16 @@
 				$('#vk7k-preset-summary-details').html('Incluye: <strong>Páginas, entradas, menús de navegación, cabeceras/plantillas FSE, opciones del tema y fotos (Uploads)</strong>.<br/>🔒 <em>Pedidos y usuarios quedan 100% protegidos e intactos.</em>');
 				$('#vk7k-advanced-panel').slideUp(200);
 				$('#vk7k-selected-preset-summary').slideDown(200);
-			} else if (type === 'custom_advanced') {
-				$('#vk7k-selected-preset-summary').slideUp(200);
-				$('#vk7k-advanced-panel').slideDown(250);
-			}
-		});
+			} else if (type === 'granular_recipes') {
+				$('#vk7k-opt-db').prop('checked', false).trigger('change');
+				$('#vk7k-opt-uploads').prop('checked', false).trigger('change');
+				$('#vk7k-opt-plugins').prop('checked', false).trigger('change');
+				$('#vk7k-opt-themes').prop('checked', false).trigger('change');
 
-		$('#vk7k-btn-view-advanced').on('click', function(e) {
-			e.preventDefault();
-			$('.vk7k-sync-type-card[data-type="custom_advanced"]').trigger('click');
+				$('#vk7k-preset-summary-title').text('🎯 Editor Granular y Recetas Guardadas Seleccionado');
+				$('#vk7k-preset-summary-details').html('Control quirúrgico: <strong>Selecciona individualmente páginas, entradas, CPTs, menús, opciones wp_options, plugins y temas</strong>.<br/>✨ <em>Personaliza los elementos en el Editor Granular o carga una Receta guardada previa.</em> <div style="margin-top:10px;"><button type="button" class="button button-primary button-small vk7k-btn-open-granular-modal"><span class="dashicons dashicons-admin-generic" style="vertical-align:middle;"></span> Abrir Editor Granular Lightbox</button></div>');
+				$('#vk7k-selected-preset-summary').slideDown(200);
+			}
 		});
 
 		$('#vk7k-opt-sync-users').on('change', function() {
@@ -996,7 +1038,21 @@
 			});
 		}
 
-		if (!syncDb && !syncUploads && (!syncPlugins || selectedPlugins.length === 0) && (!syncThemes || selectedThemes.length === 0)) {
+		const granularCount = (
+			(currentSelection.posts || []).length +
+			(currentSelection.menus || []).length +
+			(currentSelection.options || []).length +
+			(currentSelection.plugins || []).length +
+			(currentSelection.themes || []).length +
+			(currentSelection.terms || []).length
+		);
+
+		if (selectedSyncType === 'granular_recipes') {
+			if (granularCount === 0) {
+				alert('Debes seleccionar al menos un elemento en el Editor Granular (o cargar una Receta). Haz clic en "Personalizar en Editor Granular".');
+				return;
+			}
+		} else if (!syncDb && !syncUploads && (!syncPlugins || selectedPlugins.length === 0) && (!syncThemes || selectedThemes.length === 0)) {
 			alert('Debes seleccionar al menos un componente para sincronizar.');
 			return;
 		}
@@ -1034,6 +1090,9 @@
 		} else if (selectedSyncType === 'full_content_safe') {
 			typeName = 'Contenido, Menús y Diseño Seguro (Sin Usuarios ni Pedidos)';
 			typeIcon = '📦';
+		} else if (selectedSyncType === 'granular_recipes') {
+			typeName = 'Editor Granular & Recetas Guardadas (Quirúrgico)';
+			typeIcon = '🎯';
 		}
 
 		$list.append(`
@@ -1041,6 +1100,23 @@
 				<div class="vk7k-summary-head"><span>${typeIcon}</span> <strong>Tipo de Sincronización:</strong> ${typeName}</div>
 			</div>
 		`);
+
+		// Granular item
+		if (selectedSyncType === 'granular_recipes') {
+			const parts = [];
+			if ((currentSelection.posts || []).length) parts.push(`${currentSelection.posts.length} Posts/Páginas`);
+			if ((currentSelection.menus || []).length) parts.push(`${currentSelection.menus.length} Menús`);
+			if ((currentSelection.options || []).length) parts.push(`${currentSelection.options.length} Opciones`);
+			if ((currentSelection.plugins || []).length) parts.push(`${currentSelection.plugins.length} Plugins`);
+			if ((currentSelection.themes || []).length) parts.push(`${currentSelection.themes.length} Temas`);
+			if ((currentSelection.terms || []).length) parts.push(`${currentSelection.terms.length} Taxonomías`);
+			$list.append(`
+				<div class="vk7k-summary-item">
+					<div class="vk7k-summary-head"><span class="dashicons dashicons-admin-generic" style="color:#6366f1;"></span> <strong>Elementos Granulares (${granularCount})</strong></div>
+					<div class="vk7k-summary-desc">${parts.join(' • ')} ${currentSelection.sync_media ? ' • Medios adjuntos ✓' : ''}</div>
+				</div>
+			`);
+		}
 
 		// FSE item
 		if (selectedSyncType === 'fse_design_menus') {
@@ -1260,8 +1336,34 @@
 
 			if (shouldCancel) return;
 
-			// STEP 2: Database / FSE Sync
-			if (selectedSyncType === 'fse_design_menus') {
+			// STEP 2: Database / Granular / FSE Sync
+			if (selectedSyncType === 'granular_recipes') {
+				setStepActive('db');
+				log('Paso 2: Ejecutando sincronización granular de entidades y complementos seleccionados...', 'info');
+				setProgress(30, 'Sincronizando elementos granulares');
+
+				const granRes = await $.ajax({
+					url: vk7kSyncData.ajaxUrl,
+					type: 'POST',
+					data: {
+						action: 'vk7k_sync_granular_run',
+						nonce: vk7kSyncData.nonce,
+						direction: mode,
+						selection: currentSelection,
+						remote_url: remoteUrl,
+						secret_key: remoteKey,
+						remote_ip: remoteIp
+					}
+				});
+
+				if (!granRes.success) {
+					throw new Error(getErrorMessage(granRes) || 'Error ejecutando sincronización granular.');
+				}
+
+				const granData = granRes.data || {};
+				log(`✓ Granular: ${granData.message || 'Sincronización granular completada con éxito.'}`, 'success');
+				setProgress(70, 'Elementos granulares sincronizados');
+			} else if (selectedSyncType === 'fse_design_menus') {
 				setStepActive('db');
 				log('Paso 2: Sincronizando quirúrgicamente diseño FSE (menús, cabeceras, plantillas, estilos y theme_mods)...', 'info');
 				setProgress(30, 'Sincronizando diseño FSE y menús');
@@ -1373,9 +1475,11 @@
 
 			// STEP 3: Files Sync
 			const fileComponents = [];
-			if (syncUploads) fileComponents.push('uploads');
-			if (syncPlugins && selectedPlugins.length > 0) fileComponents.push('plugins');
-			if (syncThemes && selectedThemes.length > 0)  fileComponents.push('themes');
+			if (selectedSyncType !== 'granular_recipes') {
+				if (syncUploads) fileComponents.push('uploads');
+				if (syncPlugins && selectedPlugins.length > 0) fileComponents.push('plugins');
+				if (syncThemes && selectedThemes.length > 0)  fileComponents.push('themes');
+			}
 
 			if (fileComponents.length > 0) {
 				setStepActive('files');
@@ -2116,20 +2220,12 @@
 		let currentSearch = '';
 		let currentCpt = 'post';
 		let availablePostTypes = [];
-		let currentSelection = {
-			posts: [],
-			menus: [],
-			taxonomies: [],
-			terms: [],
-			options: [],
-			sync_media: true
-		};
 
 		// 1. Load available saved recipes into dropdown
 		loadSavedRecipes();
 
 		// 2. Open Granular Lightbox Modal
-		$('.vk7k-btn-open-granular-modal').on('click', function(e) {
+		$(document).on('click', '.vk7k-btn-open-granular-modal', function(e) {
 			e.preventDefault();
 			$('#vk7k-granular-modal').fadeIn(200);
 			inspectEntities();
@@ -2156,7 +2252,43 @@
 				$('#vk7k-cpt-filter-select').hide();
 			}
 
+			if (currentTab === 'plugins' || currentTab === 'themes') {
+				$('#vk7k-plugin-filter-actions').css('display', 'inline-flex');
+			} else {
+				$('#vk7k-plugin-filter-actions').hide();
+			}
+
 			fetchGridData();
+		});
+
+		// Quick Selection Actions for Plugins and Themes
+		$('#vk7k-grid-plugins-all').on('click', function(e) {
+			e.preventDefault();
+			$('#vk7k-grid-tbody .vk7k-row-checkbox').each(function() {
+				$(this).prop('checked', true);
+				toggleSelectionItem(currentTab, $(this).val(), true);
+			});
+			updateSelectedBadge();
+		});
+
+		$('#vk7k-grid-plugins-active').on('click', function(e) {
+			e.preventDefault();
+			$('#vk7k-grid-tbody tr').each(function() {
+				const $cb = $(this).find('.vk7k-row-checkbox');
+				const isActive = $(this).data('active') === 1 || $(this).data('active') === '1';
+				$cb.prop('checked', isActive);
+				toggleSelectionItem(currentTab, $cb.val(), isActive);
+			});
+			updateSelectedBadge();
+		});
+
+		$('#vk7k-grid-plugins-none').on('click', function(e) {
+			e.preventDefault();
+			$('#vk7k-grid-tbody .vk7k-row-checkbox').each(function() {
+				$(this).prop('checked', false);
+				toggleSelectionItem(currentTab, $(this).val(), false);
+			});
+			updateSelectedBadge();
 		});
 
 		// CPT sub-filter change
@@ -2219,6 +2351,8 @@
 				taxonomies: [],
 				terms: [],
 				options: [],
+				plugins: [],
+				themes: [],
 				sync_media: $('#vk7k-chk-include-media').is(':checked')
 			};
 			$('#vk7k-grid-tbody .vk7k-row-checkbox').prop('checked', false);
@@ -2289,8 +2423,12 @@
 					taxonomies: [],
 					terms: [],
 					options: [],
+					plugins: [],
+					themes: [],
 					sync_media: true
 				}, recipe.entities);
+				currentSelection.plugins = recipe.entities.plugins || recipe.plugins || [];
+				currentSelection.themes = recipe.entities.themes || recipe.themes || [];
 				currentSelection.sync_media = typeof recipe.sync_media !== 'undefined' ? !!recipe.sync_media : true;
 				$('#vk7k-chk-include-media').prop('checked', currentSelection.sync_media);
 				$('#vk7k-active-recipe-name').text(recipe.name + ' (' + (recipe.description || 'personalizada') + ')');
@@ -2303,9 +2441,15 @@
 		// Run Granular Sync Now Button
 		$('#vk7k-btn-run-granular-sync').on('click', function(e) {
 			e.preventDefault();
-			const total = (currentSelection.posts.length + currentSelection.menus.length + currentSelection.options.length);
+			const total = (
+				(currentSelection.posts || []).length +
+				(currentSelection.menus || []).length +
+				(currentSelection.options || []).length +
+				(currentSelection.plugins || []).length +
+				(currentSelection.themes || []).length
+			);
 			if (total === 0) {
-				alert('Selecciona al menos una entidad (página, entrada, menú u opción) para sincronizar.');
+				alert('Selecciona al menos una entidad (página, entrada, menú, opción, plugin o tema) para sincronizar.');
 				return;
 			}
 
@@ -2321,7 +2465,10 @@
 				action: 'vk7k_sync_granular_run',
 				nonce: vk7kSyncData.nonce,
 				direction: 'push',
-				selection: currentSelection
+				selection: currentSelection,
+				remote_url: $('#vk7k-remote-url').val(),
+				secret_key: $('#vk7k-remote-key').val(),
+				remote_ip: $('#vk7k-remote-ip').val()
 			}, function(res) {
 				$btn.prop('disabled', false).html(origHtml);
 				if (res.success && res.data) {
@@ -2348,6 +2495,12 @@
 						cptOpts += '<option value="' + pt.name + '">' + escapeHtml(pt.label) + ' (' + pt.count + ')</option>';
 					});
 					$('#vk7k-cpt-filter-select').html(cptOpts);
+					if (typeof res.data.plugins_count !== 'undefined') {
+						$('#count-plugins').attr('title', 'Total instalados: ' + res.data.plugins_count);
+					}
+					if (typeof res.data.themes_count !== 'undefined') {
+						$('#count-themes').attr('title', 'Total instalados: ' + res.data.themes_count);
+					}
 				}
 			});
 		}
@@ -2360,6 +2513,8 @@
 			if (currentTab === 'pages') queryType = 'page';
 			if (currentTab === 'cpts') queryType = currentCpt;
 			if (currentTab === 'menus') queryType = 'nav_menu_item';
+			if (currentTab === 'plugins') queryType = 'plugins';
+			if (currentTab === 'themes') queryType = 'themes';
 
 			$.post(vk7kSyncData.ajaxUrl, {
 				action: 'vk7k_sync_granular_query',
@@ -2401,17 +2556,27 @@
 				const isChecked = isItemSelected(currentTab, item.id);
 				const rowClass = isChecked ? 'is-selected' : '';
 
-				html += '<tr class="' + rowClass + '">';
-				html += '<td style="text-align: center;"><input type="checkbox" class="vk7k-row-checkbox" value="' + item.id + '" ' + (isChecked ? 'checked' : '') + ' /></td>';
-				html += '<td><code>#' + item.id + '</code></td>';
+				html += '<tr class="' + rowClass + '" data-active="' + (item.is_active ? 1 : 0) + '">';
+				html += '<td style="text-align: center;"><input type="checkbox" class="vk7k-row-checkbox" value="' + escapeHtml(item.id) + '" ' + (isChecked ? 'checked' : '') + ' /></td>';
 				
-				// Title & Thumbnail
+				if (currentTab === 'plugins' || currentTab === 'themes') {
+					html += '<td style="text-align:center;"><span class="dashicons ' + (currentTab === 'plugins' ? 'dashicons-admin-plugins' : 'dashicons-admin-appearance') + '" style="color:#6366f1; font-size:18px;"></span></td>';
+				} else {
+					html += '<td><code>#' + item.id + '</code></td>';
+				}
+				
+				// Title & Thumbnail / Info
 				html += '<td>';
 				if (item.thumb_url) {
 					html += '<img src="' + item.thumb_url + '" class="vk7k-grid-thumb" />';
 				}
 				html += '<strong>' + escapeHtml(item.title || item.name) + '</strong>';
-				if (item.preview) {
+				if (item.version) {
+					html += ' <span style="display:inline-block; font-size:0.75rem; background:#f1f5f9; color:#475569; padding:1px 6px; border-radius:4px; font-weight:600;">v' + escapeHtml(item.version) + '</span>';
+				}
+				if (item.author) {
+					html += '<div style="font-size:0.75rem; color:#64748b;">De: ' + escapeHtml(item.author) + '</div>';
+				} else if (item.preview) {
 					html += '<div style="font-size:0.75rem; color:#64748b; font-family:monospace;">' + escapeHtml(item.preview) + '</div>';
 				}
 				html += '</td>';
@@ -2421,7 +2586,11 @@
 
 				// Status
 				html += '<td>';
-				if (item.status) {
+				if (item.status === 'active') {
+					html += '<span class="vk7k-status-badge publish" style="background:#dcfce7; color:#166534; font-weight:700;">ACTIVO</span>';
+				} else if (item.status === 'inactive') {
+					html += '<span class="vk7k-status-badge draft" style="background:#f1f5f9; color:#64748b;">INACTIVO</span>';
+				} else if (item.status) {
 					html += '<span class="vk7k-status-badge ' + (item.status === 'publish' ? 'publish' : 'draft') + '">' + item.status + '</span>';
 				} else if (item.autoload) {
 					html += '<span class="vk7k-status-badge other">' + item.autoload + '</span>';
@@ -2439,43 +2608,77 @@
 		}
 
 		function isItemSelected(tab, id) {
-			id = parseInt(id) || id;
-			if (tab === 'pages' || tab === 'cpts') return currentSelection.posts.indexOf(id) !== -1;
-			if (tab === 'menus') return currentSelection.menus.indexOf(id) !== -1;
-			if (tab === 'options') return currentSelection.options.indexOf(String(id)) !== -1;
-			if (tab === 'taxonomies') return currentSelection.terms.indexOf(id) !== -1;
+			if (tab === 'plugins') return (currentSelection.plugins || []).indexOf(String(id)) !== -1;
+			if (tab === 'themes') return (currentSelection.themes || []).indexOf(String(id)) !== -1;
+			if (tab === 'options') return (currentSelection.options || []).indexOf(String(id)) !== -1;
+			const intId = parseInt(id) || id;
+			if (tab === 'pages' || tab === 'cpts') return (currentSelection.posts || []).indexOf(intId) !== -1;
+			if (tab === 'menus') return (currentSelection.menus || []).indexOf(intId) !== -1;
+			if (tab === 'taxonomies') return (currentSelection.terms || []).indexOf(intId) !== -1;
 			return false;
 		}
 
 		function toggleSelectionItem(tab, id, checked) {
-			const intId = parseInt(id) || id;
 			let list = [];
-			if (tab === 'pages' || tab === 'cpts') list = currentSelection.posts;
-			if (tab === 'menus') list = currentSelection.menus;
-			if (tab === 'options') list = currentSelection.options;
-			if (tab === 'taxonomies') list = currentSelection.terms;
+			let val = id;
+			if (tab === 'plugins') {
+				currentSelection.plugins = currentSelection.plugins || [];
+				list = currentSelection.plugins;
+				val = String(id);
+			} else if (tab === 'themes') {
+				currentSelection.themes = currentSelection.themes || [];
+				list = currentSelection.themes;
+				val = String(id);
+			} else if (tab === 'options') {
+				currentSelection.options = currentSelection.options || [];
+				list = currentSelection.options;
+				val = String(id);
+			} else if (tab === 'pages' || tab === 'cpts') {
+				currentSelection.posts = currentSelection.posts || [];
+				list = currentSelection.posts;
+				val = parseInt(id) || id;
+			} else if (tab === 'menus') {
+				currentSelection.menus = currentSelection.menus || [];
+				list = currentSelection.menus;
+				val = parseInt(id) || id;
+			} else if (tab === 'taxonomies') {
+				currentSelection.terms = currentSelection.terms || [];
+				list = currentSelection.terms;
+				val = parseInt(id) || id;
+			}
 
-			const idx = list.indexOf(intId);
+			const idx = list.indexOf(val);
 			if (checked && idx === -1) {
-				list.push(intId);
+				list.push(val);
 			} else if (!checked && idx !== -1) {
 				list.splice(idx, 1);
 			}
 		}
 
 		function updateSelectedBadge() {
-			const pCount = currentSelection.posts.length;
-			const mCount = currentSelection.menus.length;
-			const oCount = currentSelection.options.length;
-			const total = pCount + mCount + oCount;
+			const pCount = (currentSelection.posts || []).length;
+			const mCount = (currentSelection.menus || []).length;
+			const oCount = (currentSelection.options || []).length;
+			const plCount = (currentSelection.plugins || []).length;
+			const thCount = (currentSelection.themes || []).length;
+			const total = pCount + mCount + oCount + plCount + thCount;
 
 			$('#vk7k-total-selected-count').text(total);
 			$('#count-pages').text(pCount);
 			$('#count-cpts').text(pCount);
 			$('#count-menus').text(mCount);
 			$('#count-options').text(oCount);
+			$('#count-plugins').text(plCount);
+			$('#count-themes').text(thCount);
 
-			$('#vk7k-selected-breakdown').text('(' + pCount + ' posts/páginas, ' + mCount + ' menús, ' + oCount + ' opciones)');
+			const parts = [];
+			if (pCount) parts.push(pCount + ' posts/páginas');
+			if (mCount) parts.push(mCount + ' menús');
+			if (oCount) parts.push(oCount + ' opciones');
+			if (plCount) parts.push(plCount + ' plugins');
+			if (thCount) parts.push(thCount + ' temas');
+
+			$('#vk7k-selected-breakdown').text(parts.length ? '(' + parts.join(', ') + ')' : '(0 seleccionados)');
 		}
 
 		function loadSavedRecipes(selectedId) {

@@ -622,8 +622,10 @@ class VK7K_Sync_API {
 			);
 		}
 
-		// 2. Upsert posts
+		// 2. Upsert posts with smart slug matching and ID mapping
 		$synced_ids = array();
+		$id_map     = array();
+
 		foreach ( $posts as $post_row ) {
 			if ( empty( $post_row['ID'] ) ) {
 				continue;
@@ -655,13 +657,42 @@ class VK7K_Sync_API {
 				}
 			}
 
-			$existing_id = $wpdb->get_var( $wpdb->prepare( "SELECT ID FROM `{$wpdb->posts}` WHERE ID = %d", $pid ) );
-			if ( $existing_id ) {
-				$wpdb->update( $wpdb->posts, $post_row, array( 'ID' => $pid ) );
-			} else {
-				$wpdb->insert( $wpdb->posts, $post_row );
+			// Check if a post with the same slug + post_type already exists on remote
+			$target_pid = $pid;
+			if ( ! empty( $post_row['post_name'] ) && ! empty( $post_row['post_type'] ) && 'attachment' !== $post_row['post_type'] ) {
+				$matched_slug_id = (int) $wpdb->get_var(
+					$wpdb->prepare(
+						"SELECT ID FROM `{$wpdb->posts}` WHERE post_name = %s AND post_type = %s ORDER BY ID DESC LIMIT 1",
+						$post_row['post_name'],
+						$post_row['post_type']
+					)
+				);
+				if ( $matched_slug_id > 0 ) {
+					$target_pid = $matched_slug_id;
+				}
 			}
-			$synced_ids[] = $pid;
+
+			$existing_row = $wpdb->get_row( $wpdb->prepare( "SELECT ID, post_name, post_type FROM `{$wpdb->posts}` WHERE ID = %d", $target_pid ) );
+
+			if ( $existing_row ) {
+				// Prevent collision if existing post on remote is a different post_type
+				if ( $existing_row->post_type !== $post_row['post_type'] ) {
+					$new_row = $post_row;
+					unset( $new_row['ID'] );
+					$wpdb->insert( $wpdb->posts, $new_row );
+					$target_pid = (int) $wpdb->insert_id;
+				} else {
+					$post_row['ID'] = $target_pid;
+					$wpdb->update( $wpdb->posts, $post_row, array( 'ID' => $target_pid ) );
+				}
+			} else {
+				// Brand new post on remote
+				$wpdb->insert( $wpdb->posts, $post_row );
+				$target_pid = $pid;
+			}
+
+			$id_map[ $pid ] = $target_pid;
+			$synced_ids[]   = $target_pid;
 		}
 
 		// 3. Upsert postmeta for synced posts
@@ -674,6 +705,9 @@ class VK7K_Sync_API {
 		$meta_count = 0;
 		foreach ( $postmeta as $m ) {
 			unset( $m['meta_id'] );
+			$orig_post_id = (int) ( $m['post_id'] ?? 0 );
+			$m['post_id'] = isset( $id_map[ $orig_post_id ] ) ? $id_map[ $orig_post_id ] : $orig_post_id;
+
 			if ( $replacer && isset( $m['meta_value'] ) && is_string( $m['meta_value'] ) ) {
 				$m['meta_value'] = $replacer->replace( $m['meta_value'] );
 			}
@@ -683,10 +717,12 @@ class VK7K_Sync_API {
 
 		// 4. Upsert term_relationships
 		foreach ( $term_relationships as $tr ) {
+			$orig_obj_id = (int) ( $tr['object_id'] ?? 0 );
+			$obj_id      = isset( $id_map[ $orig_obj_id ] ) ? $id_map[ $orig_obj_id ] : $orig_obj_id;
 			$wpdb->replace(
 				$wpdb->term_relationships,
 				array(
-					'object_id'        => (int) $tr['object_id'],
+					'object_id'        => $obj_id,
 					'term_taxonomy_id' => (int) $tr['term_taxonomy_id'],
 					'term_order'       => (int) ( $tr['term_order'] ?? 0 ),
 				)
@@ -705,11 +741,24 @@ class VK7K_Sync_API {
 		}
 		flush_rewrite_rules( true );
 
+		// Collect permalinks of synced posts (excluding attachments)
+		$post_urls = array();
+		foreach ( $synced_ids as $sid ) {
+			$ptype = get_post_type( $sid );
+			if ( $ptype && 'attachment' !== $ptype ) {
+				$permalink = get_permalink( $sid );
+				if ( $permalink ) {
+					$post_urls[ $sid ] = $permalink;
+				}
+			}
+		}
+
 		return rest_ensure_response(
 			array(
 				'success'      => true,
 				'posts_synced' => count( $synced_ids ),
 				'post_ids'     => $synced_ids,
+				'post_urls'    => $post_urls,
 				'meta_synced'  => $meta_count,
 				'message'      => sprintf( '%d entrada(s) y %d metadatos sincronizados con éxito.', count( $synced_ids ), $meta_count ),
 			)
@@ -903,12 +952,18 @@ class VK7K_Sync_API {
 			}
 		}
 
+		$remote_post_url = '';
+		if ( ! is_wp_error( $res_posts ) && ! empty( $res_posts->data['post_urls'] ) ) {
+			$remote_post_url = reset( $res_posts->data['post_urls'] );
+		}
+
 		return rest_ensure_response( array(
-			'success'        => true,
-			'posts_synced'   => $posts_synced,
-			'options_synced' => $options_synced,
-			'media_needed'   => ! empty( $package['media_files'] ) ? $package['media_files'] : array(),
-			'message'        => sprintf( 'Importación granular completada: %d entradas y %d opciones.', $posts_synced, $options_synced ),
+			'success'         => true,
+			'posts_synced'    => $posts_synced,
+			'options_synced'  => $options_synced,
+			'remote_post_url' => $remote_post_url,
+			'media_needed'    => ! empty( $package['media_files'] ) ? $package['media_files'] : array(),
+			'message'         => sprintf( 'Importación granular completada: %d entradas y %d opciones.', $posts_synced, $options_synced ),
 		) );
 	}
 

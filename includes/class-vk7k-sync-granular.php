@@ -74,10 +74,15 @@ class VK7K_Sync_Granular {
 			);
 		}
 
+		$plugins_count = count( VK7K_Sync_Files::get_available_plugins() );
+		$themes_count  = count( VK7K_Sync_Files::get_available_themes() );
+
 		return array(
-			'post_types' => array_values( $post_type_list ),
-			'menus'      => $menus,
-			'taxonomies' => $taxonomies,
+			'post_types'    => array_values( $post_type_list ),
+			'menus'         => $menus,
+			'taxonomies'    => $taxonomies,
+			'plugins_count' => $plugins_count,
+			'themes_count'  => $themes_count,
 		);
 	}
 
@@ -99,6 +104,16 @@ class VK7K_Sync_Granular {
 		// Handle wp_options tab query
 		if ( 'options' === $type ) {
 			return self::query_options( $search, $page, $per_page );
+		}
+
+		// Handle plugins tab query
+		if ( 'plugins' === $type ) {
+			return self::query_plugins( $search, $page, $per_page );
+		}
+
+		// Handle themes tab query
+		if ( 'themes' === $type ) {
+			return self::query_themes( $search, $page, $per_page );
 		}
 
 		// Handle taxonomies tab query
@@ -244,12 +259,117 @@ class VK7K_Sync_Granular {
 	}
 
 	/**
+	 * Query installed plugins for the DataGrid Lightbox.
+	 *
+	 * @param string $search
+	 * @param int    $page
+	 * @param int    $per_page
+	 * @return array
+	 */
+	public static function query_plugins( $search = '', $page = 1, $per_page = 25 ) {
+		$all_plugins = VK7K_Sync_Files::get_available_plugins();
+		$filtered    = array();
+
+		foreach ( $all_plugins as $p ) {
+			if ( ! empty( $search ) ) {
+				$match_name = false !== stripos( $p['name'], $search );
+				$match_slug = false !== stripos( $p['slug'], $search );
+				$match_file = false !== stripos( $p['file'], $search );
+				if ( ! $match_name && ! $match_slug && ! $match_file ) {
+					continue;
+				}
+			}
+			$filtered[] = $p;
+		}
+
+		$total  = count( $filtered );
+		$offset = ( $page - 1 ) * $per_page;
+		$sliced = array_slice( $filtered, $offset, $per_page );
+
+		$items = array();
+		foreach ( $sliced as $p ) {
+			$items[] = array(
+				'id'        => $p['slug'],
+				'title'     => $p['name'],
+				'name'      => $p['name'],
+				'slug'      => $p['slug'],
+				'file'      => $p['file'],
+				'version'   => ! empty( $p['version'] ) ? 'v' . $p['version'] : '',
+				'status'    => ! empty( $p['is_active'] ) ? 'active' : 'inactive',
+				'is_active' => ! empty( $p['is_active'] ),
+				'type'      => 'plugin',
+				'modified'  => $p['file'],
+			);
+		}
+
+		return array(
+			'total'    => $total,
+			'page'     => $page,
+			'per_page' => $per_page,
+			'pages'    => ceil( $total / $per_page ),
+			'items'    => $items,
+		);
+	}
+
+	/**
+	 * Query installed themes for the DataGrid Lightbox.
+	 *
+	 * @param string $search
+	 * @param int    $page
+	 * @param int    $per_page
+	 * @return array
+	 */
+	public static function query_themes( $search = '', $page = 1, $per_page = 25 ) {
+		$all_themes = VK7K_Sync_Files::get_available_themes();
+		$filtered   = array();
+
+		foreach ( $all_themes as $t ) {
+			if ( ! empty( $search ) ) {
+				$match_name = false !== stripos( $t['name'], $search );
+				$match_slug = false !== stripos( $t['slug'], $search );
+				if ( ! $match_name && ! $match_slug ) {
+					continue;
+				}
+			}
+			$filtered[] = $t;
+		}
+
+		$total  = count( $filtered );
+		$offset = ( $page - 1 ) * $per_page;
+		$sliced = array_slice( $filtered, $offset, $per_page );
+
+		$items = array();
+		foreach ( $sliced as $t ) {
+			$items[] = array(
+				'id'        => $t['slug'],
+				'title'     => $t['name'],
+				'name'      => $t['name'],
+				'slug'      => $t['slug'],
+				'version'   => ! empty( $t['version'] ) ? 'v' . $t['version'] : '',
+				'status'    => ! empty( $t['is_active'] ) ? 'active' : 'inactive',
+				'is_active' => ! empty( $t['is_active'] ),
+				'type'      => 'theme',
+				'modified'  => 'wp-content/themes/' . $t['slug'],
+			);
+		}
+
+		return array(
+			'total'    => $total,
+			'page'     => $page,
+			'per_page' => $per_page,
+			'pages'    => ceil( $total / $per_page ),
+			'items'    => $items,
+		);
+	}
+
+	/**
 	 * Extract selected entities with automated recursive dependencies:
 	 * - Posts / Pages: post row + postmeta + terms + term_relationships + attached media + inline media
 	 * - Menus: nav_menu term + term_taxonomy + nav_menu_item posts + item postmeta + theme_mods nav location
 	 * - Options: raw option rows
+	 * - Plugins & Themes: folder slugs for file synchronization
 	 *
-	 * @param array $selection Configuration array { posts: [], post_types: [], menus: [], terms: [], options: [], sync_media: bool }
+	 * @param array $selection Configuration array { posts: [], post_types: [], menus: [], terms: [], options: [], plugins: [], themes: [], sync_media: bool }
 	 * @return array Package ready for transmission to /granular/import
 	 */
 	public static function export_package( $selection = array() ) {
@@ -259,7 +379,21 @@ class VK7K_Sync_Granular {
 		$selected_menus    = ! empty( $selection['menus'] ) && is_array( $selection['menus'] ) ? array_map( 'intval', $selection['menus'] ) : array();
 		$selected_options  = ! empty( $selection['options'] ) && is_array( $selection['options'] ) ? array_map( 'sanitize_text_field', $selection['options'] ) : array();
 		$selected_terms    = ! empty( $selection['terms'] ) && is_array( $selection['terms'] ) ? array_map( 'intval', $selection['terms'] ) : array();
+		$selected_plugins  = ! empty( $selection['plugins'] ) && is_array( $selection['plugins'] ) ? array_map( 'sanitize_file_name', $selection['plugins'] ) : array();
+		$selected_themes   = ! empty( $selection['themes'] ) && is_array( $selection['themes'] ) ? array_map( 'sanitize_file_name', $selection['themes'] ) : array();
 		$sync_media        = ! empty( $selection['sync_media'] );
+
+		// 0. Fallback lookup by slug + post_type (e.g. for cross-environment Pull)
+		if ( ! empty( $selection['slug'] ) && ! empty( $selection['post_type'] ) ) {
+			$found_by_slug = (int) $wpdb->get_var( $wpdb->prepare(
+				"SELECT ID FROM `{$wpdb->posts}` WHERE post_name = %s AND post_type = %s AND post_status NOT IN ('auto-draft', 'trash') ORDER BY ID DESC LIMIT 1",
+				sanitize_title( $selection['slug'] ),
+				sanitize_key( $selection['post_type'] )
+			) );
+			if ( $found_by_slug > 0 ) {
+				$selected_post_ids[] = $found_by_slug;
+			}
+		}
 
 		// 1. Expand Menu items
 		$menu_term_ids = array();
@@ -313,21 +447,132 @@ class VK7K_Sync_Granular {
 				}
 			}
 
-			// Add media posts into posts to sync
-			$media_post_ids = array_unique( $media_post_ids );
+			// D) Inline media embedded in Gutenberg blocks / post_content
+			$contents = $wpdb->get_col( "SELECT post_content FROM `{$wpdb->posts}` WHERE ID IN ({$ids_in})" );
+			foreach ( $contents as $cnt ) {
+				if ( empty( $cnt ) ) {
+					continue;
+				}
+				// wp:image / wp:cover / wp:media-text attributes
+				if ( preg_match_all( '/<!--\s*wp:(?:image|cover|media-text)[^>]*\{[^}]*"(?:id|mediaId)":\s*(\d+)/i', $cnt, $matches ) ) {
+					foreach ( $matches[1] as $mid ) {
+						$media_post_ids[] = (int) $mid;
+					}
+				}
+				// Gutenberg gallery block "ids":[12,34]
+				if ( preg_match_all( '/"ids":\s*\[([0-9,\s]+)\]/i', $cnt, $matches ) ) {
+					foreach ( $matches[1] as $ids_str ) {
+						$parts = explode( ',', $ids_str );
+						foreach ( $parts as $p ) {
+							$p = (int) trim( $p );
+							if ( $p > 0 ) {
+								$media_post_ids[] = $p;
+							}
+						}
+					}
+				}
+				// Standard wp-image-123 classes
+				if ( preg_match_all( '/wp-image-(\d+)/i', $cnt, $matches ) ) {
+					foreach ( $matches[1] as $mid ) {
+						$media_post_ids[] = (int) $mid;
+					}
+				}
+			}
+
+			// E) JSON/serialized media in postmeta (Elementor, ACF, Slider Revolution, etc.)
+			$meta_values = $wpdb->get_col( "SELECT meta_value FROM `{$wpdb->postmeta}` WHERE post_id IN ({$ids_in}) AND (meta_key = '_elementor_data' OR meta_value LIKE '%\"id\":%' OR meta_value LIKE '%wp-content/uploads%')" );
+			foreach ( $meta_values as $mv ) {
+				if ( empty( $mv ) ) {
+					continue;
+				}
+				if ( preg_match_all( '/"(?:image|background_image|url|photo|thumbnail)":\s*\{[^}]*"id":\s*(\d+)/i', $mv, $matches ) ) {
+					foreach ( $matches[1] as $mid ) {
+						$media_post_ids[] = (int) $mid;
+					}
+				}
+				if ( preg_match_all( '/"id":\s*(\d+)/i', $mv, $matches ) ) {
+					foreach ( $matches[1] as $mid ) {
+						$mid = (int) $mid;
+						if ( $mid > 0 ) {
+							$media_post_ids[] = $mid;
+						}
+					}
+				}
+			}
+
+			// F) Collect media posts and their physical files (including all resized thumbnails)
+			$media_post_ids = array_unique( array_filter( $media_post_ids ) );
+			$upload_dir     = wp_upload_dir();
+			$upload_basedir = trailingslashit( wp_normalize_path( $upload_dir['basedir'] ) );
+
+			$seen_paths = array();
+
 			foreach ( $media_post_ids as $mid ) {
+				// Verify this is a valid attachment
+				$att_post = get_post( $mid );
+				if ( ! $att_post || 'attachment' !== $att_post->post_type ) {
+					continue;
+				}
+
 				$selected_post_ids[] = $mid;
-				// Collect file path
+
 				$file_path = get_attached_file( $mid );
-				if ( $file_path && file_exists( $file_path ) ) {
-					$upload_dir = wp_upload_dir();
-					$rel_path   = ltrim( str_replace( wp_normalize_path( $upload_dir['basedir'] ), '', wp_normalize_path( $file_path ) ), '/' );
+				if ( ! $file_path || ! file_exists( $file_path ) ) {
+					continue;
+				}
+
+				$file_path = wp_normalize_path( $file_path );
+				$dir_path  = dirname( $file_path );
+
+				// Main original/scaled file
+				$rel_path = ltrim( str_replace( $upload_basedir, '', $file_path ), '/' );
+				if ( ! isset( $seen_paths[ $rel_path ] ) ) {
+					$seen_paths[ $rel_path ] = true;
 					$media_files[] = array(
 						'id'       => $mid,
 						'rel_path' => $rel_path,
 						'abs_path' => $file_path,
 						'size'     => filesize( $file_path ),
 					);
+				}
+
+				// Intermediate sizes generated by WordPress
+				$metadata = wp_get_attachment_metadata( $mid );
+				if ( ! empty( $metadata['sizes'] ) && is_array( $metadata['sizes'] ) ) {
+					foreach ( $metadata['sizes'] as $size_info ) {
+						if ( ! empty( $size_info['file'] ) ) {
+							$thumb_abs = wp_normalize_path( $dir_path . '/' . $size_info['file'] );
+							if ( file_exists( $thumb_abs ) ) {
+								$thumb_rel = ltrim( str_replace( $upload_basedir, '', $thumb_abs ), '/' );
+								if ( ! isset( $seen_paths[ $thumb_rel ] ) ) {
+									$seen_paths[ $thumb_rel ] = true;
+									$media_files[] = array(
+										'id'       => $mid,
+										'rel_path' => $thumb_rel,
+										'abs_path' => $thumb_abs,
+										'size'     => filesize( $thumb_abs ),
+									);
+								}
+							}
+						}
+					}
+				}
+
+				// Full unscaled original image if WP created -scaled version
+				if ( ! empty( $metadata['original_image'] ) ) {
+					$orig_abs = wp_normalize_path( $dir_path . '/' . $metadata['original_image'] );
+					if ( file_exists( $orig_abs ) ) {
+						$orig_rel = ltrim( str_replace( $upload_basedir, '', $orig_abs ), '/' );
+						if ( ! isset( $seen_paths[ $orig_rel ] ) ) {
+							$seen_paths[ $orig_rel ] = true;
+							$media_files[] = array(
+								'id'       => $mid,
+								'rel_path' => $orig_rel,
+								'abs_path' => $orig_abs,
+								'size'     => filesize( $orig_abs ),
+							);
+						}
+					}
 				}
 			}
 		}
@@ -421,6 +666,59 @@ class VK7K_Sync_Granular {
 			'terms'              => $terms_data,
 			'options'            => $options_rows,
 			'media_files'        => $media_files,
+			'plugins'            => $selected_plugins,
+			'themes'             => $selected_themes,
+		);
+	}
+
+	/**
+	 * Inspect single post dependencies (media, terms, meta) for Editor push/pull panel.
+	 *
+	 * @param int $post_id
+	 * @return array|null
+	 */
+	public static function inspect_single_post( $post_id ) {
+		global $wpdb;
+
+		$post = get_post( $post_id );
+		if ( ! $post ) {
+			return null;
+		}
+
+		$thumb_id  = get_post_thumbnail_id( $post->ID );
+		$thumb_url = $thumb_id ? wp_get_attachment_thumb_url( $thumb_id ) : '';
+
+		// Count meta
+		$meta_count = (int) $wpdb->get_var( $wpdb->prepare(
+			"SELECT COUNT(meta_id) FROM `{$wpdb->postmeta}` WHERE post_id = %d",
+			$post->ID
+		) );
+
+		// Count terms
+		$terms_count = (int) $wpdb->get_var( $wpdb->prepare(
+			"SELECT COUNT(term_taxonomy_id) FROM `{$wpdb->term_relationships}` WHERE object_id = %d",
+			$post->ID
+		) );
+
+		// Run export with media discovery to count media dependencies
+		$pkg = self::export_package( array(
+			'posts'      => array( $post->ID ),
+			'sync_media' => true,
+		) );
+
+		$media_count = ! empty( $pkg['media_files'] ) ? count( $pkg['media_files'] ) : 0;
+
+		return array(
+			'id'          => (int) $post->ID,
+			'title'       => ! empty( $post->post_title ) ? $post->post_title : '(sin título - #' . $post->ID . ')',
+			'slug'        => $post->post_name,
+			'type'        => $post->post_type,
+			'status'      => $post->post_status,
+			'modified'    => $post->post_modified,
+			'thumb_url'   => $thumb_url ?: '',
+			'media_count' => $media_count,
+			'meta_count'  => $meta_count,
+			'terms_count' => $terms_count,
 		);
 	}
 }
