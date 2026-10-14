@@ -641,11 +641,13 @@ class VK7K_Sync_API {
 
 			// If this is an FSE template/template_part, remove any conflicting post with same post_type + post_name but different ID
 			if ( ! empty( $post_row['post_type'] ) && in_array( $post_row['post_type'], array( 'wp_template', 'wp_template_part', 'wp_global_styles' ), true ) && ! empty( $post_row['post_name'] ) ) {
+				$clean_name = $post_row['post_name'];
 				$conflict_ids = $wpdb->get_col(
 					$wpdb->prepare(
-						"SELECT ID FROM `{$wpdb->posts}` WHERE post_type = %s AND post_name = %s AND ID != %d",
+						"SELECT ID FROM `{$wpdb->posts}` WHERE post_type = %s AND (post_name = %s OR post_name LIKE %s) AND ID != %d",
 						$post_row['post_type'],
-						$post_row['post_name'],
+						$clean_name,
+						'%//' . $wpdb->esc_like( $clean_name ),
 						$pid
 					)
 				);
@@ -662,8 +664,9 @@ class VK7K_Sync_API {
 			if ( ! empty( $post_row['post_name'] ) && ! empty( $post_row['post_type'] ) && 'attachment' !== $post_row['post_type'] ) {
 				$matched_slug_id = (int) $wpdb->get_var(
 					$wpdb->prepare(
-						"SELECT ID FROM `{$wpdb->posts}` WHERE post_name = %s AND post_type = %s ORDER BY ID DESC LIMIT 1",
+						"SELECT ID FROM `{$wpdb->posts}` WHERE (post_name = %s OR post_name LIKE %s) AND post_type = %s ORDER BY ID DESC LIMIT 1",
 						$post_row['post_name'],
+						'%//' . $wpdb->esc_like( $post_row['post_name'] ),
 						$post_row['post_type']
 					)
 				);
@@ -693,6 +696,14 @@ class VK7K_Sync_API {
 
 			$id_map[ $pid ] = $target_pid;
 			$synced_ids[]   = $target_pid;
+
+			// Ensure active wp_theme taxonomy is set for FSE templates so WordPress links them to current theme
+			if ( in_array( $post_row['post_type'], array( 'wp_template', 'wp_template_part' ), true ) ) {
+				wp_set_post_terms( $target_pid, get_stylesheet(), 'wp_theme' );
+				if ( function_exists( 'wp_clean_theme_json_cache' ) ) {
+					wp_clean_theme_json_cache();
+				}
+			}
 		}
 
 		// 3. Upsert postmeta for synced posts

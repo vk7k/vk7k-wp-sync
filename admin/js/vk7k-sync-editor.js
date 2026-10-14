@@ -54,22 +54,55 @@
 	function getCurrentPostInfo() {
 		const selectEditor = wp.data.select( 'core/editor' );
 		const selectSite   = wp.data.select( 'core/edit-site' );
+		const selectCore   = wp.data.select( 'core' );
 
-		let id     = null;
-		let type   = 'post';
-		let title  = '';
-		let slug   = '';
-		let status = 'publish';
+		let id           = null;
+		let type         = 'post';
+		let title        = '';
+		let slug         = '';
+		let status       = 'publish';
+		let siteEntityId = null;
 
-		if ( selectEditor && typeof selectEditor.getCurrentPostId === 'function' ) {
+		if ( selectEditor && typeof selectEditor.getCurrentPostId === 'function' && selectEditor.getCurrentPostId() ) {
 			id     = selectEditor.getCurrentPostId();
 			type   = selectEditor.getCurrentPostType() || type;
 			title  = selectEditor.getEditedPostAttribute( 'title' ) || '';
 			slug   = selectEditor.getEditedPostAttribute( 'slug' ) || '';
 			status = selectEditor.getEditedPostAttribute( 'status' ) || '';
 		} else if ( selectSite && typeof selectSite.getEditedPostId === 'function' ) {
-			id   = selectSite.getEditedPostId();
-			type = selectSite.getEditedPostType() || type;
+			siteEntityId = selectSite.getEditedPostId();
+			type         = selectSite.getEditedPostType() || type;
+		}
+
+		// Handle FSE Site Editor entities (templates / template parts)
+		if ( siteEntityId || type === 'wp_template' || type === 'wp_template_part' ) {
+			const entityKey = siteEntityId || id;
+			if ( entityKey && typeof entityKey === 'string' ) {
+				slug = entityKey.indexOf( '//' ) !== -1 ? entityKey.split( '//' )[1] : entityKey;
+			}
+
+			if ( selectCore && typeof selectCore.getEditedEntityRecord === 'function' && entityKey ) {
+				const record = selectCore.getEditedEntityRecord( 'postType', type, entityKey )
+					|| ( typeof selectCore.getEntityRecord === 'function' ? selectCore.getEntityRecord( 'postType', type, entityKey ) : null );
+				if ( record ) {
+					if ( record.wp_id ) {
+						id = record.wp_id;
+					}
+					if ( record.slug ) {
+						slug = record.slug;
+					}
+					if ( record.title ) {
+						title = typeof record.title === 'object' ? ( record.title.rendered || record.title.raw || '' ) : record.title;
+					}
+					if ( record.status ) {
+						status = record.status;
+					}
+				}
+			}
+
+			if ( ! title && slug ) {
+				title = slug.charAt( 0 ).toUpperCase() + slug.slice( 1 ).replace( /[-_]/g, ' ' );
+			}
 		}
 
 		if ( ( ! id || 0 === id ) && window.vk7kSyncEditor && window.vk7kSyncEditor.post ) {
@@ -81,10 +114,12 @@
 
 		return {
 			id: parseInt( id, 10 ) || 0,
+			siteEntityId: siteEntityId || null,
 			type: type || 'post',
-			title: title || '(sin título)',
+			title: title || ( slug ? slug : '(sin título)' ),
 			slug: slug || '',
 			status: status || 'publish',
+			isFse: ( type === 'wp_template' || type === 'wp_template_part' || !! siteEntityId ),
 		};
 	}
 
@@ -109,18 +144,28 @@
 			const info = getCurrentPostInfo();
 			setPostInfo( info );
 
-			if ( info.id > 0 && config.ajaxUrl && config.nonce ) {
+			if ( ( info.id > 0 || info.slug ) && config.ajaxUrl && config.nonce ) {
 				setInspecting( true );
 				const fd = new FormData();
 				fd.append( 'action', 'vk7k_sync_editor_inspect' );
 				fd.append( 'nonce', config.nonce );
 				fd.append( 'post_id', info.id );
+				fd.append( 'post_name', info.slug );
+				fd.append( 'post_type', info.type );
 
 				fetch( config.ajaxUrl, { method: 'POST', body: fd } )
 					.then( ( res ) => res.json() )
 					.then( ( data ) => {
 						if ( data.success && data.data ) {
 							setInspectData( data.data );
+							if ( data.data.id && data.data.id > 0 ) {
+								setPostInfo( ( prev ) => ( {
+									...prev,
+									id: data.data.id,
+									title: data.data.title || prev.title,
+									slug: data.data.slug || prev.slug,
+								} ) );
+							}
 						}
 					} )
 					.catch( () => {} )
@@ -140,14 +185,20 @@
 				// 1. If editor has unsaved changes, save first
 				const selectEditor   = wp.data.select( 'core/editor' );
 				const dispatchEditor = wp.data.dispatch( 'core/editor' );
-				if ( selectEditor && selectEditor.isEditedPostDirty && selectEditor.isEditedPostDirty() && dispatchEditor && dispatchEditor.savePost ) {
+				const dispatchCore   = wp.data.dispatch( 'core' );
+				let current          = getCurrentPostInfo();
+
+				if ( current.isFse && current.siteEntityId && dispatchCore && typeof dispatchCore.saveEditedEntityRecord === 'function' ) {
+					setSyncStep( 'Guardando plantilla FSE antes de sincronizar...' );
+					await dispatchCore.saveEditedEntityRecord( 'postType', current.type, current.siteEntityId );
+				} else if ( selectEditor && selectEditor.isEditedPostDirty && selectEditor.isEditedPostDirty() && dispatchEditor && dispatchEditor.savePost ) {
 					setSyncStep( 'Guardando cambios del editor antes de sincronizar...' );
 					await dispatchEditor.savePost();
 				}
 
-				const current = getCurrentPostInfo();
-				if ( ! current.id ) {
-					throw new Error( 'No se pudo identificar la entrada o página actual.' );
+				current = getCurrentPostInfo();
+				if ( ! current.id && ! current.slug ) {
+					throw new Error( 'No se pudo identificar la entrada o plantilla actual.' );
 				}
 
 				setSyncStep( 'Extrayendo contenido, metadatos y medios locales...' );
@@ -317,7 +368,7 @@
 					'div',
 					{ className: 'vk7k-sync-card-meta' },
 					el( 'span', { className: 'vk7k-sync-type-pill' }, postInfo.type ),
-					el( 'span', { className: 'vk7k-sync-id-badge' }, '#' + postInfo.id ),
+					el( 'span', { className: 'vk7k-sync-id-badge' }, postInfo.id > 0 ? '#' + postInfo.id : ( postInfo.isFse ? 'FSE' : '#0' ) ),
 					postInfo.slug ? el( 'span', { style: { color: '#94a3b8' } }, '/' + postInfo.slug ) : null
 				),
 

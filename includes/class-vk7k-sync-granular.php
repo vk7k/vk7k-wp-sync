@@ -383,13 +383,9 @@ class VK7K_Sync_Granular {
 		$selected_themes   = ! empty( $selection['themes'] ) && is_array( $selection['themes'] ) ? array_map( 'sanitize_file_name', $selection['themes'] ) : array();
 		$sync_media        = ! empty( $selection['sync_media'] );
 
-		// 0. Fallback lookup by slug + post_type (e.g. for cross-environment Pull)
+		// 0. Fallback lookup by slug + post_type (e.g. for cross-environment Pull and FSE templates)
 		if ( ! empty( $selection['slug'] ) && ! empty( $selection['post_type'] ) ) {
-			$found_by_slug = (int) $wpdb->get_var( $wpdb->prepare(
-				"SELECT ID FROM `{$wpdb->posts}` WHERE post_name = %s AND post_type = %s AND post_status NOT IN ('auto-draft', 'trash') ORDER BY ID DESC LIMIT 1",
-				sanitize_title( $selection['slug'] ),
-				sanitize_key( $selection['post_type'] )
-			) );
+			$found_by_slug = self::resolve_post_id( $selection['slug'], $selection['post_type'] );
 			if ( $found_by_slug > 0 ) {
 				$selected_post_ids[] = $found_by_slug;
 			}
@@ -721,4 +717,58 @@ class VK7K_Sync_Granular {
 			'terms_count' => $terms_count,
 		);
 	}
+
+	/**
+	 * Resolve post ID from slug and post_type, with FSE theme fallback.
+	 *
+	 * @param string $slug
+	 * @param string $post_type
+	 * @return int
+	 */
+	public static function resolve_post_id( $slug, $post_type = 'post' ) {
+		global $wpdb;
+
+		if ( empty( $slug ) ) {
+			return 0;
+		}
+
+		$clean_slug = sanitize_title( $slug );
+		$post_type  = sanitize_key( $post_type );
+
+		// 1. Check in wp_posts by exact post_name or prefixed by theme ("theme//slug")
+		$id = (int) $wpdb->get_var( $wpdb->prepare(
+			"SELECT ID FROM `{$wpdb->posts}` WHERE (post_name = %s OR post_name LIKE %s) AND post_type = %s AND post_status NOT IN ('auto-draft', 'trash') ORDER BY ID DESC LIMIT 1",
+			$clean_slug,
+			'%//' . $wpdb->esc_like( $clean_slug ),
+			$post_type
+		) );
+
+		if ( $id > 0 ) {
+			return $id;
+		}
+
+		// 2. Fallback for FSE templates/parts that exist in theme files but have not been saved to DB yet
+		if ( in_array( $post_type, array( 'wp_template', 'wp_template_part' ), true ) && function_exists( 'get_block_template' ) ) {
+			$t = get_block_template( get_stylesheet() . '//' . $clean_slug, $post_type );
+			if ( ! $t && get_stylesheet() !== get_template() ) {
+				$t = get_block_template( get_template() . '//' . $clean_slug, $post_type );
+			}
+			if ( $t && ! empty( $t->content ) ) {
+				$new_id = wp_insert_post( array(
+					'post_type'    => $post_type,
+					'post_status'  => 'publish',
+					'post_title'   => ! empty( $t->title ) ? $t->title : $clean_slug,
+					'post_name'    => $clean_slug,
+					'post_content' => $t->content,
+				) );
+				if ( $new_id && ! is_wp_error( $new_id ) ) {
+					wp_set_post_terms( $new_id, get_stylesheet(), 'wp_theme' );
+					return (int) $new_id;
+				}
+			}
+		}
+
+		return 0;
+	}
 }
+

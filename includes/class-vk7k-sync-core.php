@@ -1182,7 +1182,14 @@ class VK7K_Sync_Core {
 			wp_send_json_error( array( 'message' => __( 'No autorizado.', 'vk7k-wp-sync' ) ) );
 		}
 
-		$post_id = isset( $_POST['post_id'] ) ? (int) $_POST['post_id'] : 0;
+		$post_id   = isset( $_POST['post_id'] ) ? (int) $_POST['post_id'] : 0;
+		$post_name = isset( $_POST['post_name'] ) ? sanitize_text_field( wp_unslash( $_POST['post_name'] ) ) : '';
+		$post_type = isset( $_POST['post_type'] ) ? sanitize_key( $_POST['post_type'] ) : 'post';
+
+		if ( $post_id <= 0 && ! empty( $post_name ) ) {
+			$post_id = VK7K_Sync_Granular::resolve_post_id( $post_name, $post_type );
+		}
+
 		if ( $post_id <= 0 ) {
 			wp_send_json_error( array( 'message' => __( 'ID de contenido inválido.', 'vk7k-wp-sync' ) ) );
 		}
@@ -1254,7 +1261,13 @@ class VK7K_Sync_Core {
 		}
 
 		$post_id    = isset( $_POST['post_id'] ) ? (int) $_POST['post_id'] : 0;
+		$post_name  = isset( $_POST['post_name'] ) ? sanitize_text_field( wp_unslash( $_POST['post_name'] ) ) : '';
+		$post_type  = isset( $_POST['post_type'] ) ? sanitize_key( $_POST['post_type'] ) : 'post';
 		$sync_media = ! empty( $_POST['sync_media'] );
+
+		if ( $post_id <= 0 && ! empty( $post_name ) ) {
+			$post_id = VK7K_Sync_Granular::resolve_post_id( $post_name, $post_type );
+		}
 
 		if ( $post_id <= 0 ) {
 			wp_send_json_error( array( 'message' => __( 'ID de contenido inválido.', 'vk7k-wp-sync' ) ) );
@@ -1272,6 +1285,8 @@ class VK7K_Sync_Core {
 		// 1. Export package locally with all media and dependencies
 		$package = VK7K_Sync_Granular::export_package( array(
 			'posts'      => array( $post_id ),
+			'slug'       => $post_name,
+			'post_type'  => $post_type,
 			'sync_media' => $sync_media,
 		) );
 
@@ -1345,6 +1360,10 @@ class VK7K_Sync_Core {
 		$post_type  = isset( $_POST['post_type'] ) ? sanitize_key( $_POST['post_type'] ) : '';
 		$post_name  = isset( $_POST['post_name'] ) ? sanitize_title( $_POST['post_name'] ) : '';
 		$sync_media = ! empty( $_POST['sync_media'] );
+
+		if ( $post_id <= 0 && ! empty( $post_name ) ) {
+			$post_id = VK7K_Sync_Granular::resolve_post_id( $post_name, $post_type );
+		}
 
 		if ( $post_id <= 0 && empty( $post_name ) ) {
 			wp_send_json_error( array( 'message' => __( 'Identificador de contenido inválido.', 'vk7k-wp-sync' ) ) );
