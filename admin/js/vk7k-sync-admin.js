@@ -13,6 +13,7 @@
 	let initialCheckTimer = null;
 	let currentSelection = {
 		posts: [],
+		media: [],
 		menus: [],
 		taxonomies: [],
 		terms: [],
@@ -1040,6 +1041,7 @@
 
 		const granularCount = (
 			(currentSelection.posts || []).length +
+			(currentSelection.media || []).length +
 			(currentSelection.menus || []).length +
 			(currentSelection.options || []).length +
 			(currentSelection.plugins || []).length +
@@ -1105,6 +1107,7 @@
 		if (selectedSyncType === 'granular_recipes') {
 			const parts = [];
 			if ((currentSelection.posts || []).length) parts.push(`${currentSelection.posts.length} Posts/Páginas`);
+			if ((currentSelection.media || []).length) parts.push(`${currentSelection.media.length} Medios`);
 			if ((currentSelection.menus || []).length) parts.push(`${currentSelection.menus.length} Menús`);
 			if ((currentSelection.options || []).length) parts.push(`${currentSelection.options.length} Opciones`);
 			if ((currentSelection.plugins || []).length) parts.push(`${currentSelection.plugins.length} Plugins`);
@@ -2347,6 +2350,7 @@
 			e.preventDefault();
 			currentSelection = {
 				posts: [],
+				media: [],
 				menus: [],
 				taxonomies: [],
 				terms: [],
@@ -2419,6 +2423,7 @@
 			if (recipe && recipe.entities) {
 				currentSelection = $.extend(true, {
 					posts: [],
+					media: [],
 					menus: [],
 					taxonomies: [],
 					terms: [],
@@ -2427,6 +2432,7 @@
 					themes: [],
 					sync_media: true
 				}, recipe.entities);
+				currentSelection.media = recipe.entities.media || recipe.media || [];
 				currentSelection.plugins = recipe.entities.plugins || recipe.plugins || [];
 				currentSelection.themes = recipe.entities.themes || recipe.themes || [];
 				currentSelection.sync_media = typeof recipe.sync_media !== 'undefined' ? !!recipe.sync_media : true;
@@ -2443,13 +2449,14 @@
 			e.preventDefault();
 			const total = (
 				(currentSelection.posts || []).length +
+				(currentSelection.media || []).length +
 				(currentSelection.menus || []).length +
 				(currentSelection.options || []).length +
 				(currentSelection.plugins || []).length +
 				(currentSelection.themes || []).length
 			);
 			if (total === 0) {
-				alert('Selecciona al menos una entidad (página, entrada, menú, opción, plugin o tema) para sincronizar.');
+				alert('Selecciona al menos una entidad (página, entrada, medio, menú, opción, plugin o tema) para sincronizar.');
 				return;
 			}
 
@@ -2495,6 +2502,9 @@
 						cptOpts += '<option value="' + pt.name + '">' + escapeHtml(pt.label) + ' (' + pt.count + ')</option>';
 					});
 					$('#vk7k-cpt-filter-select').html(cptOpts);
+					if (typeof res.data.media_count !== 'undefined') {
+						$('#count-media').attr('title', 'Total en biblioteca: ' + res.data.media_count);
+					}
 					if (typeof res.data.plugins_count !== 'undefined') {
 						$('#count-plugins').attr('title', 'Total instalados: ' + res.data.plugins_count);
 					}
@@ -2512,6 +2522,7 @@
 			let queryTax = '';
 			if (currentTab === 'pages') queryType = 'page';
 			if (currentTab === 'cpts') queryType = currentCpt;
+			if (currentTab === 'media') queryType = 'attachment';
 			if (currentTab === 'menus') queryType = 'nav_menu_item';
 			if (currentTab === 'plugins') queryType = 'plugins';
 			if (currentTab === 'themes') queryType = 'themes';
@@ -2613,6 +2624,7 @@
 			if (tab === 'options') return (currentSelection.options || []).indexOf(String(id)) !== -1;
 			const intId = parseInt(id) || id;
 			if (tab === 'pages' || tab === 'cpts') return (currentSelection.posts || []).indexOf(intId) !== -1;
+			if (tab === 'media') return (currentSelection.media || []).indexOf(intId) !== -1;
 			if (tab === 'menus') return (currentSelection.menus || []).indexOf(intId) !== -1;
 			if (tab === 'taxonomies') return (currentSelection.terms || []).indexOf(intId) !== -1;
 			return false;
@@ -2637,6 +2649,10 @@
 				currentSelection.posts = currentSelection.posts || [];
 				list = currentSelection.posts;
 				val = parseInt(id) || id;
+			} else if (tab === 'media') {
+				currentSelection.media = currentSelection.media || [];
+				list = currentSelection.media;
+				val = parseInt(id) || id;
 			} else if (tab === 'menus') {
 				currentSelection.menus = currentSelection.menus || [];
 				list = currentSelection.menus;
@@ -2657,15 +2673,17 @@
 
 		function updateSelectedBadge() {
 			const pCount = (currentSelection.posts || []).length;
+			const medCount = (currentSelection.media || []).length;
 			const mCount = (currentSelection.menus || []).length;
 			const oCount = (currentSelection.options || []).length;
 			const plCount = (currentSelection.plugins || []).length;
 			const thCount = (currentSelection.themes || []).length;
-			const total = pCount + mCount + oCount + plCount + thCount;
+			const total = pCount + medCount + mCount + oCount + plCount + thCount;
 
 			$('#vk7k-total-selected-count').text(total);
 			$('#count-pages').text(pCount);
 			$('#count-cpts').text(pCount);
+			$('#count-media').text(medCount);
 			$('#count-menus').text(mCount);
 			$('#count-options').text(oCount);
 			$('#count-plugins').text(plCount);
@@ -2673,6 +2691,7 @@
 
 			const parts = [];
 			if (pCount) parts.push(pCount + ' posts/páginas');
+			if (medCount) parts.push(medCount + ' medios');
 			if (mCount) parts.push(mCount + ' menús');
 			if (oCount) parts.push(oCount + ' opciones');
 			if (plCount) parts.push(plCount + ' plugins');

@@ -1068,6 +1068,10 @@ class VK7K_Sync_Admin {
 									<span class="dashicons dashicons-menu-alt3"></span> <?php esc_html_e( 'Menús', 'vk7k-wp-sync' ); ?>
 									<span class="vk7k-tab-count" id="count-menus">0</span>
 								</button>
+								<button type="button" class="vk7k-tab-btn" data-tab="media">
+									<span class="dashicons dashicons-admin-media"></span> <?php esc_html_e( 'Medios', 'vk7k-wp-sync' ); ?>
+									<span class="vk7k-tab-count" id="count-media">0</span>
+								</button>
 								<button type="button" class="vk7k-tab-btn" data-tab="taxonomies">
 									<span class="dashicons dashicons-tag"></span> <?php esc_html_e( 'Taxonomías', 'vk7k-wp-sync' ); ?>
 									<span class="vk7k-tab-count" id="count-taxonomies">0</span>

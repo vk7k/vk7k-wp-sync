@@ -942,7 +942,7 @@ class VK7K_Sync_Core {
 		$themes_synced  = 0;
 		$errors         = array();
 
-		$has_db_entities = ! empty( $selection['posts'] ) || ! empty( $selection['menus'] ) || ! empty( $selection['options'] ) || ! empty( $selection['terms'] ) || ! empty( $selection['slug'] );
+		$has_db_entities = ! empty( $selection['posts'] ) || ! empty( $selection['media'] ) || ! empty( $selection['menus'] ) || ! empty( $selection['options'] ) || ! empty( $selection['terms'] ) || ! empty( $selection['slug'] );
 
 		if ( 'pull' === $direction ) {
 			// 1. Pull Database entities and media if selected

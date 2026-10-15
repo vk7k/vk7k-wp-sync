@@ -76,6 +76,7 @@ class VK7K_Sync_Granular {
 
 		$plugins_count = count( VK7K_Sync_Files::get_available_plugins() );
 		$themes_count  = count( VK7K_Sync_Files::get_available_themes() );
+		$media_count   = (int) $wpdb->get_var( "SELECT COUNT(ID) FROM `{$wpdb->posts}` WHERE post_type = 'attachment' AND post_status != 'trash'" );
 
 		return array(
 			'post_types'    => array_values( $post_type_list ),
@@ -83,6 +84,7 @@ class VK7K_Sync_Granular {
 			'taxonomies'    => $taxonomies,
 			'plugins_count' => $plugins_count,
 			'themes_count'  => $themes_count,
+			'media_count'   => $media_count,
 		);
 	}
 
@@ -122,9 +124,11 @@ class VK7K_Sync_Granular {
 			return self::query_terms( $taxonomy, $search, $page, $per_page );
 		}
 
-		// Standard posts / pages / CPTs query
-		$where = "WHERE post_type = %s AND post_status NOT IN ('auto-draft', 'trash')";
-		$params = array( $type );
+		// Standard posts / pages / CPTs / media query
+		$where = 'attachment' === $type 
+			? "WHERE post_type = 'attachment' AND post_status != 'trash'" 
+			: "WHERE post_type = %s AND post_status NOT IN ('auto-draft', 'trash')";
+		$params = 'attachment' === $type ? array() : array( $type );
 
 		if ( ! empty( $search ) ) {
 			$where .= " AND (post_title LIKE %s OR post_name LIKE %s)";
@@ -132,9 +136,11 @@ class VK7K_Sync_Granular {
 			$params[] = '%' . $wpdb->esc_like( $search ) . '%';
 		}
 
-		$total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(ID) FROM `{$wpdb->posts}` {$where}", ...$params ) );
+		$total = ! empty( $params ) 
+			? (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(ID) FROM `{$wpdb->posts}` {$where}", ...$params ) )
+			: (int) $wpdb->get_var( "SELECT COUNT(ID) FROM `{$wpdb->posts}` {$where}" );
 
-		$sql = "SELECT ID, post_title, post_name, post_status, post_type, post_date, post_modified 
+		$sql = "SELECT ID, post_title, post_name, post_status, post_type, post_date, post_modified, post_mime_type 
 				FROM `{$wpdb->posts}` {$where} 
 				ORDER BY post_modified DESC 
 				LIMIT %d OFFSET %d";
@@ -145,19 +151,32 @@ class VK7K_Sync_Granular {
 
 		$items = array();
 		foreach ( $rows as $row ) {
-			$thumb_id  = get_post_thumbnail_id( $row['ID'] );
-			$thumb_url = $thumb_id ? wp_get_attachment_thumb_url( $thumb_id ) : '';
+			$thumb_url = '';
+			if ( 'attachment' === $row['post_type'] ) {
+				$thumb_url = wp_get_attachment_thumb_url( $row['ID'] );
+				if ( ! $thumb_url && wp_attachment_is_image( $row['ID'] ) ) {
+					$thumb_url = wp_get_attachment_url( $row['ID'] );
+				}
+			} else {
+				$thumb_id  = get_post_thumbnail_id( $row['ID'] );
+				$thumb_url = $thumb_id ? wp_get_attachment_thumb_url( $thumb_id ) : '';
+			}
+
+			$title = ! empty( $row['post_title'] ) ? $row['post_title'] : '(sin título - #' . $row['ID'] . ')';
+			if ( 'attachment' === $row['post_type'] && ! empty( $row['post_mime_type'] ) ) {
+				$title .= ' (' . $row['post_mime_type'] . ')';
+			}
 
 			$items[] = array(
 				'id'          => (int) $row['ID'],
-				'title'       => ! empty( $row['post_title'] ) ? $row['post_title'] : '(sin título - #' . $row['ID'] . ')',
+				'title'       => $title,
 				'slug'        => $row['post_name'],
-				'status'      => $row['post_status'],
+				'status'      => 'attachment' === $row['post_type'] ? 'inherit' : $row['post_status'],
 				'type'        => $row['post_type'],
 				'date'        => $row['post_date'],
 				'modified'    => $row['post_modified'],
 				'thumb_url'   => $thumb_url ?: '',
-				'view_url'    => get_permalink( $row['ID'] ) ?: '',
+				'view_url'    => get_permalink( $row['ID'] ) ?: ( 'attachment' === $row['post_type'] ? wp_get_attachment_url( $row['ID'] ) : '' ),
 			);
 		}
 
@@ -376,12 +395,18 @@ class VK7K_Sync_Granular {
 		global $wpdb;
 
 		$selected_post_ids = ! empty( $selection['posts'] ) && is_array( $selection['posts'] ) ? array_map( 'intval', $selection['posts'] ) : array();
+		$selected_media_ids= ! empty( $selection['media'] ) && is_array( $selection['media'] ) ? array_map( 'intval', $selection['media'] ) : array();
 		$selected_menus    = ! empty( $selection['menus'] ) && is_array( $selection['menus'] ) ? array_map( 'intval', $selection['menus'] ) : array();
 		$selected_options  = ! empty( $selection['options'] ) && is_array( $selection['options'] ) ? array_map( 'sanitize_text_field', $selection['options'] ) : array();
 		$selected_terms    = ! empty( $selection['terms'] ) && is_array( $selection['terms'] ) ? array_map( 'intval', $selection['terms'] ) : array();
 		$selected_plugins  = ! empty( $selection['plugins'] ) && is_array( $selection['plugins'] ) ? array_map( 'sanitize_file_name', $selection['plugins'] ) : array();
 		$selected_themes   = ! empty( $selection['themes'] ) && is_array( $selection['themes'] ) ? array_map( 'sanitize_file_name', $selection['themes'] ) : array();
-		$sync_media        = ! empty( $selection['sync_media'] );
+		$sync_media        = ! empty( $selection['sync_media'] ) || ! empty( $selected_media_ids );
+
+		// Merge explicitly selected media IDs into post IDs
+		if ( ! empty( $selected_media_ids ) ) {
+			$selected_post_ids = array_merge( $selected_post_ids, $selected_media_ids );
+		}
 
 		// 0. Fallback lookup by slug + post_type (e.g. for cross-environment Pull and FSE templates)
 		if ( ! empty( $selection['slug'] ) && ! empty( $selection['post_type'] ) ) {
@@ -408,7 +433,7 @@ class VK7K_Sync_Granular {
 		$selected_post_ids = array_unique( array_filter( $selected_post_ids ) );
 
 		// 2. Discover media dependencies if requested
-		$media_post_ids = array();
+		$media_post_ids = ! empty( $selected_media_ids ) ? $selected_media_ids : array();
 		$media_files    = array();
 
 		if ( $sync_media && ! empty( $selected_post_ids ) ) {

@@ -675,7 +675,25 @@ class VK7K_Sync_API {
 				}
 			}
 
-			$existing_row = $wpdb->get_row( $wpdb->prepare( "SELECT ID, post_name, post_type FROM `{$wpdb->posts}` WHERE ID = %d", $target_pid ) );
+			// For attachments, try matching exact local ID first; if occupied by another post_type, check by attached relative file path or guid
+			if ( 'attachment' === ( $post_row['post_type'] ?? '' ) ) {
+				$existing_at_id = $wpdb->get_row( $wpdb->prepare( "SELECT ID, post_type FROM `{$wpdb->posts}` WHERE ID = %d", $pid ) );
+				if ( $existing_at_id && 'attachment' !== $existing_at_id->post_type ) {
+					// ID is occupied by a page/post, check if this attachment already exists under another ID by guid or attached file
+					$matched_att_id = 0;
+					if ( ! empty( $post_row['guid'] ) ) {
+						$matched_att_id = (int) $wpdb->get_var( $wpdb->prepare( "SELECT ID FROM `{$wpdb->posts}` WHERE post_type = 'attachment' AND guid = %s LIMIT 1", $post_row['guid'] ) );
+					}
+					if ( ! $matched_att_id && ! empty( $post_row['post_name'] ) ) {
+						$matched_att_id = (int) $wpdb->get_var( $wpdb->prepare( "SELECT ID FROM `{$wpdb->posts}` WHERE post_type = 'attachment' AND post_name = %s LIMIT 1", $post_row['post_name'] ) );
+					}
+					$target_pid = $matched_att_id > 0 ? $matched_att_id : 0;
+				} else {
+					$target_pid = $pid;
+				}
+			}
+
+			$existing_row = $target_pid > 0 ? $wpdb->get_row( $wpdb->prepare( "SELECT ID, post_name, post_type FROM `{$wpdb->posts}` WHERE ID = %d", $target_pid ) ) : null;
 
 			if ( $existing_row ) {
 				// Prevent collision if existing post on remote is a different post_type
@@ -689,9 +707,16 @@ class VK7K_Sync_API {
 					$wpdb->update( $wpdb->posts, $post_row, array( 'ID' => $target_pid ) );
 				}
 			} else {
-				// Brand new post on remote
-				$wpdb->insert( $wpdb->posts, $post_row );
-				$target_pid = $pid;
+				// Brand new post on remote (preserve exact original ID if available)
+				if ( $target_pid > 0 ) {
+					$post_row['ID'] = $target_pid;
+					$wpdb->insert( $wpdb->posts, $post_row );
+				} else {
+					$new_row = $post_row;
+					unset( $new_row['ID'] );
+					$wpdb->insert( $wpdb->posts, $new_row );
+					$target_pid = (int) $wpdb->insert_id;
+				}
 			}
 
 			$id_map[ $pid ] = $target_pid;
