@@ -1027,10 +1027,10 @@ class VK7K_Sync_Admin {
 
 			<!-- DATAGRID LIGHTBOX MODAL (Granular Editor) -->
 			<div id="vk7k-granular-modal" class="vk7k-modal vk7k-granular-lightbox" style="display:none;">
-				<div class="vk7k-modal-content" style="max-width: 1050px; width: 95vw; height: 88vh; display: flex; flex-direction: column; padding: 0; overflow: hidden; border-radius: 12px;">
+				<div class="vk7k-modal-content" style="max-width: 1200px; width: 96vw; height: 90vh; display: flex; flex-direction: column; padding: 0; overflow: hidden; border-radius: 12px;">
 					
 					<!-- Lightbox Header -->
-					<div class="vk7k-modal-header" style="padding: 16px 20px; background: #0f172a; color: #fff; display: flex; align-items: center; justify-content: space-between;">
+					<div class="vk7k-modal-header" style="padding: 12px 18px; background: #0f172a; color: #fff; display: flex; align-items: center; justify-content: space-between;">
 						<div style="display: flex; align-items: center; gap: 12px;">
 							<span class="dashicons dashicons-table-col-after" style="font-size: 24px; color: #38bdf8;"></span>
 							<div>
@@ -1054,8 +1054,8 @@ class VK7K_Sync_Admin {
 					<div class="vk7k-modal-body" style="flex: 1; display: flex; flex-direction: column; padding: 0; overflow: hidden; background: #f8fafc;">
 						
 						<!-- Sub-Header: Tabs Bar & Search -->
-						<div style="padding: 10px 20px; background: #ffffff; border-bottom: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
-							<div class="vk7k-granular-tabs" style="display: flex; gap: 6px;">
+						<div class="vk7k-granular-subheader" style="padding: 8px 16px; background: #ffffff; border-bottom: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
+							<div class="vk7k-granular-tabs" style="display: flex; flex-wrap: wrap; gap: 5px; align-items: center; max-width: 100%;">
 								<button type="button" class="vk7k-tab-btn is-active" data-tab="pages">
 									<span class="dashicons dashicons-admin-page"></span> <?php esc_html_e( 'Páginas', 'vk7k-wp-sync' ); ?>
 									<span class="vk7k-tab-count" id="count-pages">0</span>
@@ -1091,8 +1091,8 @@ class VK7K_Sync_Admin {
 							</div>
 
 							<!-- Search Bar & Sub-Filters -->
-							<div style="display: flex; align-items: center; gap: 8px;">
-								<select id="vk7k-cpt-filter-select" class="vk7k-select" style="display:none; font-size: 0.85rem; height: 32px; padding: 2px 8px;">
+							<div class="vk7k-granular-toolbar" style="display: flex; align-items: center; gap: 6px; margin-left: auto;">
+								<select id="vk7k-cpt-filter-select" class="vk7k-select" style="display:none; font-size: 0.82rem; height: 30px; padding: 2px 8px;">
 									<option value="post"><?php esc_html_e( 'Entradas (post)', 'vk7k-wp-sync' ); ?></option>
 									<option value="product"><?php esc_html_e( 'Productos (product)', 'vk7k-wp-sync' ); ?></option>
 								</select>
@@ -1102,21 +1102,21 @@ class VK7K_Sync_Admin {
 									<button type="button" class="button button-small" id="vk7k-grid-plugins-none"><?php esc_html_e( 'Ninguno', 'vk7k-wp-sync' ); ?></button>
 								</div>
 								<div class="vk7k-search-box" style="position: relative;">
-									<input type="text" id="vk7k-grid-search" placeholder="<?php esc_attr_e( 'Buscar en lista...', 'vk7k-wp-sync' ); ?>" style="height: 32px; font-size: 0.85rem; padding-left: 28px; width: 220px; border-radius: 6px; border: 1px solid #cbd5e1;" />
-									<span class="dashicons dashicons-search" style="position: absolute; left: 6px; top: 7px; color: #94a3b8; font-size: 16px;"></span>
+									<input type="text" id="vk7k-grid-search" placeholder="<?php esc_attr_e( 'Buscar en lista...', 'vk7k-wp-sync' ); ?>" style="height: 30px; font-size: 0.82rem; padding-left: 28px; width: 190px; border-radius: 6px; border: 1px solid #cbd5e1;" />
+									<span class="dashicons dashicons-search" style="position: absolute; left: 6px; top: 6px; color: #94a3b8; font-size: 16px; width: 16px; height: 16px;"></span>
 								</div>
 							</div>
 						</div>
 
 						<!-- Selected Counter Banner -->
-						<div style="padding: 6px 20px; background: #e0f2fe; border-bottom: 1px solid #bae6fd; font-size: 0.85rem; color: #0369a1; display: flex; align-items: center; justify-content: space-between;">
+						<div style="padding: 5px 16px; background: #e0f2fe; border-bottom: 1px solid #bae6fd; font-size: 0.82rem; color: #0369a1; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
 							<div>
 								<strong id="vk7k-total-selected-count">0</strong> <?php esc_html_e( 'elementos seleccionados en total para la receta.', 'vk7k-wp-sync' ); ?>
 								<span id="vk7k-selected-breakdown" style="color: #0c4a6e; margin-left: 8px; font-size: 0.8rem;"></span>
 							</div>
 							<div style="display: flex; align-items: center; gap: 12px;">
 								<label style="display: flex; align-items: center; gap: 4px; cursor: pointer; font-weight: 500;">
-									<input type="checkbox" id="vk7k-chk-include-media" checked />
+									<input type="checkbox" id="vk7k-chk-include-media" checked style="margin: 0;" />
 									<span><?php esc_html_e( 'Incluir fotos/archivos multimedia asociados automáticamente', 'vk7k-wp-sync' ); ?></span>
 								</label>
 								<button type="button" id="vk7k-btn-clear-selection" class="button button-link" style="color: #0284c7; text-decoration: none; padding: 0; font-size: 0.8rem;">
@@ -1126,16 +1126,16 @@ class VK7K_Sync_Admin {
 						</div>
 
 						<!-- DataGrid Container (Scrollable Table) -->
-						<div class="vk7k-datagrid-container" style="flex: 1; overflow-y: auto; padding: 12px 20px; background: #fff;">
+						<div class="vk7k-datagrid-container" style="flex: 1; overflow-y: auto; padding: 4px 16px; background: #fff;">
 							<table class="vk7k-datagrid-table widefat striped" id="vk7k-granular-table">
 								<thead>
 									<tr>
-										<th style="width: 40px; text-align: center;"><input type="checkbox" id="vk7k-grid-select-all" /></th>
+										<th style="width: 36px; text-align: center;"><input type="checkbox" id="vk7k-grid-select-all" style="margin: 0; vertical-align: middle;" /></th>
 										<th style="width: 60px;"><?php esc_html_e( 'ID', 'vk7k-wp-sync' ); ?></th>
 										<th><?php esc_html_e( 'Título / Nombre', 'vk7k-wp-sync' ); ?></th>
 										<th style="width: 140px;"><?php esc_html_e( 'Slug / Identificador', 'vk7k-wp-sync' ); ?></th>
-										<th style="width: 100px;"><?php esc_html_e( 'Estado', 'vk7k-wp-sync' ); ?></th>
-										<th style="width: 140px;"><?php esc_html_e( 'Modificado', 'vk7k-wp-sync' ); ?></th>
+										<th style="width: 90px;"><?php esc_html_e( 'Estado', 'vk7k-wp-sync' ); ?></th>
+										<th style="width: 130px;"><?php esc_html_e( 'Modificado', 'vk7k-wp-sync' ); ?></th>
 									</tr>
 								</thead>
 								<tbody id="vk7k-grid-tbody">
@@ -1150,7 +1150,7 @@ class VK7K_Sync_Admin {
 						</div>
 
 						<!-- Pagination Bar -->
-						<div style="padding: 8px 20px; background: #f8fafc; border-top: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between; font-size: 0.85rem; color: #64748b;">
+						<div style="padding: 6px 16px; background: #f8fafc; border-top: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between; font-size: 0.8125rem; color: #64748b;">
 							<div id="vk7k-grid-pagination-info"><?php esc_html_e( 'Mostrando 0 de 0', 'vk7k-wp-sync' ); ?></div>
 							<div style="display: flex; align-items: center; gap: 6px;">
 								<button type="button" class="button button-small" id="vk7k-grid-prev-page" disabled>&laquo; <?php esc_html_e( 'Anterior', 'vk7k-wp-sync' ); ?></button>
@@ -1162,12 +1162,12 @@ class VK7K_Sync_Admin {
 					</div>
 
 					<!-- Lightbox Footer -->
-					<div class="vk7k-modal-footer" style="padding: 14px 20px; background: #ffffff; border-top: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between;">
-						<button type="button" class="button button-secondary vk7k-modal-close-action" style="height: 38px;">
+					<div class="vk7k-modal-footer" style="padding: 10px 16px; background: #ffffff; border-top: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between;">
+						<button type="button" class="button button-secondary vk7k-modal-close-action" style="height: 36px;">
 							<?php esc_html_e( 'Cerrar sin Sincronizar', 'vk7k-wp-sync' ); ?>
 						</button>
 						<div style="display: flex; align-items: center; gap: 10px;">
-							<button type="button" id="vk7k-btn-run-granular-sync" class="button button-primary" style="height: 38px; padding: 0 20px; font-weight: 600; background: #2563eb; border-color: #1d4ed8;">
+							<button type="button" id="vk7k-btn-run-granular-sync" class="button button-primary" style="height: 36px; padding: 0 18px; font-weight: 600; background: #2563eb; border-color: #1d4ed8;">
 								<span class="dashicons dashicons-randomize" style="margin-top: 4px;"></span> <?php esc_html_e( 'Ejecutar Sincronización Granular Ahora', 'vk7k-wp-sync' ); ?>
 							</button>
 						</div>

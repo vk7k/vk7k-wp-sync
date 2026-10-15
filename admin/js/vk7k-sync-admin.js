@@ -2568,10 +2568,10 @@
 				const rowClass = isChecked ? 'is-selected' : '';
 
 				html += '<tr class="' + rowClass + '" data-active="' + (item.is_active ? 1 : 0) + '">';
-				html += '<td style="text-align: center;"><input type="checkbox" class="vk7k-row-checkbox" value="' + escapeHtml(item.id) + '" ' + (isChecked ? 'checked' : '') + ' /></td>';
+				html += '<td style="text-align: center;"><input type="checkbox" class="vk7k-row-checkbox" style="margin:0; vertical-align:middle;" value="' + escapeHtml(item.id) + '" ' + (isChecked ? 'checked' : '') + ' /></td>';
 				
 				if (currentTab === 'plugins' || currentTab === 'themes') {
-					html += '<td style="text-align:center;"><span class="dashicons ' + (currentTab === 'plugins' ? 'dashicons-admin-plugins' : 'dashicons-admin-appearance') + '" style="color:#6366f1; font-size:18px;"></span></td>';
+					html += '<td style="text-align:center;"><span class="dashicons ' + (currentTab === 'plugins' ? 'dashicons-admin-plugins' : 'dashicons-admin-appearance') + '" style="color:#6366f1; font-size:16px;"></span></td>';
 				} else {
 					html += '<td><code>#' + item.id + '</code></td>';
 				}
@@ -2583,12 +2583,12 @@
 				}
 				html += '<strong>' + escapeHtml(item.title || item.name) + '</strong>';
 				if (item.version) {
-					html += ' <span style="display:inline-block; font-size:0.75rem; background:#f1f5f9; color:#475569; padding:1px 6px; border-radius:4px; font-weight:600;">v' + escapeHtml(item.version) + '</span>';
+					html += ' <span style="display:inline-block; font-size:0.72rem; background:#f1f5f9; color:#475569; padding:1px 5px; border-radius:4px; font-weight:600;">v' + escapeHtml(item.version) + '</span>';
 				}
 				if (item.author) {
-					html += '<div style="font-size:0.75rem; color:#64748b;">De: ' + escapeHtml(item.author) + '</div>';
+					html += '<div style="font-size:0.72rem; color:#64748b; line-height:1.2; margin-top:1px;">De: ' + escapeHtml(item.author) + '</div>';
 				} else if (item.preview) {
-					html += '<div style="font-size:0.75rem; color:#64748b; font-family:monospace;">' + escapeHtml(item.preview) + '</div>';
+					html += '<div style="font-size:0.72rem; color:#64748b; font-family:monospace; line-height:1.2; margin-top:1px;">' + escapeHtml(item.preview) + '</div>';
 				}
 				html += '</td>';
 
@@ -2611,7 +2611,7 @@
 				html += '</td>';
 
 				// Date modified
-				html += '<td style="font-size:0.8rem; color:#64748b;">' + (item.modified || item.date || '-') + '</td>';
+				html += '<td style="font-size:0.78rem; color:#64748b; white-space:nowrap;">' + (item.modified || item.date || '-') + '</td>';
 				html += '</tr>';
 			});
 
