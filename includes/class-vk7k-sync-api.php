@@ -989,18 +989,37 @@ class VK7K_Sync_API {
 			}
 		}
 
+		// Forward users payload to import_users
+		$users_synced = 0;
+		if ( ! empty( $package['users'] ) ) {
+			$res_users = VK7K_Sync_Granular::import_users(
+				$package['users'],
+				$package['usermeta'] ?? array(),
+				$package['source_prefix'] ?? 'wp_'
+			);
+			if ( ! is_wp_error( $res_users ) && isset( $res_users['users_synced'] ) ) {
+				$users_synced = (int) $res_users['users_synced'];
+			}
+		}
+
 		$remote_post_url = '';
 		if ( ! is_wp_error( $res_posts ) && ! empty( $res_posts->data['post_urls'] ) ) {
 			$remote_post_url = reset( $res_posts->data['post_urls'] );
 		}
 
+		$summary_msgs = array();
+		if ( $posts_synced > 0 )   $summary_msgs[] = sprintf( '%d entradas', $posts_synced );
+		if ( $options_synced > 0 ) $summary_msgs[] = sprintf( '%d opciones', $options_synced );
+		if ( $users_synced > 0 )   $summary_msgs[] = sprintf( '%d usuarios', $users_synced );
+
 		return rest_ensure_response( array(
 			'success'         => true,
 			'posts_synced'    => $posts_synced,
 			'options_synced'  => $options_synced,
+			'users_synced'    => $users_synced,
 			'remote_post_url' => $remote_post_url,
 			'media_needed'    => ! empty( $package['media_files'] ) ? $package['media_files'] : array(),
-			'message'         => sprintf( 'Importación granular completada: %d entradas y %d opciones.', $posts_synced, $options_synced ),
+			'message'         => 'Importación granular completada: ' . ( ! empty( $summary_msgs ) ? implode( ', ', $summary_msgs ) : 'sin cambios' ) . '.',
 		) );
 	}
 

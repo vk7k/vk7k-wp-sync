@@ -77,6 +77,8 @@ class VK7K_Sync_Granular {
 		$plugins_count = count( VK7K_Sync_Files::get_available_plugins() );
 		$themes_count  = count( VK7K_Sync_Files::get_available_themes() );
 		$media_count   = (int) $wpdb->get_var( "SELECT COUNT(ID) FROM `{$wpdb->posts}` WHERE post_type = 'attachment' AND post_status != 'trash'" );
+		$users_data    = count_users();
+		$users_count   = (int) ( $users_data['total_users'] ?? 0 );
 
 		return array(
 			'post_types'    => array_values( $post_type_list ),
@@ -85,6 +87,7 @@ class VK7K_Sync_Granular {
 			'plugins_count' => $plugins_count,
 			'themes_count'  => $themes_count,
 			'media_count'   => $media_count,
+			'users_count'   => $users_count,
 		);
 	}
 
@@ -116,6 +119,11 @@ class VK7K_Sync_Granular {
 		// Handle themes tab query
 		if ( 'themes' === $type ) {
 			return self::query_themes( $search, $page, $per_page );
+		}
+
+		// Handle users tab query
+		if ( 'users' === $type ) {
+			return self::query_users( $search, $page, $per_page );
 		}
 
 		// Handle taxonomies tab query
@@ -382,6 +390,63 @@ class VK7K_Sync_Granular {
 	}
 
 	/**
+	 * Query WordPress users for the DataGrid Lightbox.
+	 *
+	 * @param string $search
+	 * @param int    $page
+	 * @param int    $per_page
+	 * @return array
+	 */
+	public static function query_users( $search = '', $page = 1, $per_page = 25 ) {
+		$args = array(
+			'number'      => $per_page,
+			'offset'      => ( $page - 1 ) * $per_page,
+			'orderby'     => 'registered',
+			'order'       => 'DESC',
+			'count_total' => true,
+		);
+
+		if ( ! empty( $search ) ) {
+			$args['search']         = '*' . $search . '*';
+			$args['search_columns'] = array( 'user_login', 'user_email', 'user_nicename', 'display_name' );
+		}
+
+		$user_query = new WP_User_Query( $args );
+		$users      = $user_query->get_results();
+		$total      = (int) $user_query->get_total();
+		if ( ! $total && ! empty( $users ) ) {
+			$total = count( $users );
+		}
+
+		$items = array();
+		foreach ( $users as $u ) {
+			$roles = ! empty( $u->roles ) && is_array( $u->roles ) ? implode( ', ', $u->roles ) : 'sin rol';
+			$items[] = array(
+				'id'        => (int) $u->ID,
+				'title'     => $u->display_name ? $u->display_name : $u->user_login,
+				'name'      => $u->display_name,
+				'slug'      => $u->user_login,
+				'email'     => $u->user_email,
+				'status'    => strtoupper( $roles ),
+				'role'      => $roles,
+				'date'      => $u->user_registered,
+				'modified'  => $u->user_registered,
+				'thumb_url' => get_avatar_url( $u->ID, array( 'size' => 48 ) ),
+				'preview'   => esc_html( $u->user_email ),
+				'type'      => 'user',
+			);
+		}
+
+		return array(
+			'total'    => $total,
+			'page'     => $page,
+			'per_page' => $per_page,
+			'pages'    => ceil( $total / $per_page ),
+			'items'    => $items,
+		);
+	}
+
+	/**
 	 * Extract selected entities with automated recursive dependencies:
 	 * - Posts / Pages: post row + postmeta + terms + term_relationships + attached media + inline media
 	 * - Menus: nav_menu term + term_taxonomy + nav_menu_item posts + item postmeta + theme_mods nav location
@@ -401,6 +466,7 @@ class VK7K_Sync_Granular {
 		$selected_terms    = ! empty( $selection['terms'] ) && is_array( $selection['terms'] ) ? array_map( 'intval', $selection['terms'] ) : array();
 		$selected_plugins  = ! empty( $selection['plugins'] ) && is_array( $selection['plugins'] ) ? array_map( 'sanitize_file_name', $selection['plugins'] ) : array();
 		$selected_themes   = ! empty( $selection['themes'] ) && is_array( $selection['themes'] ) ? array_map( 'sanitize_file_name', $selection['themes'] ) : array();
+		$selected_user_ids = ! empty( $selection['users'] ) && is_array( $selection['users'] ) ? array_map( 'intval', $selection['users'] ) : array();
 		$sync_media        = ! empty( $selection['sync_media'] ) || ! empty( $selected_media_ids );
 
 		// Merge explicitly selected media IDs into post IDs
@@ -679,8 +745,18 @@ class VK7K_Sync_Granular {
 			}
 		}
 
+		// 7. Fetch Users rows & Usermeta rows
+		$users_rows    = array();
+		$usermeta_rows = array();
+		if ( ! empty( $selected_user_ids ) ) {
+			$u_in = implode( ',', $selected_user_ids );
+			$users_rows    = $wpdb->get_results( "SELECT * FROM `{$wpdb->users}` WHERE ID IN ({$u_in})", ARRAY_A );
+			$usermeta_rows = $wpdb->get_results( "SELECT * FROM `{$wpdb->usermeta}` WHERE user_id IN ({$u_in})", ARRAY_A );
+		}
+
 		return array(
 			'source_url'         => home_url(),
+			'source_prefix'      => $wpdb->prefix,
 			'posts'              => $posts_rows,
 			'postmeta'           => $postmeta_rows,
 			'term_relationships' => $term_rel_rows,
@@ -689,6 +765,8 @@ class VK7K_Sync_Granular {
 			'media_files'        => $media_files,
 			'plugins'            => $selected_plugins,
 			'themes'             => $selected_themes,
+			'users'              => $users_rows,
+			'usermeta'           => $usermeta_rows,
 		);
 	}
 
@@ -794,6 +872,143 @@ class VK7K_Sync_Granular {
 		}
 
 		return 0;
+	}
+
+	/**
+	 * Import and synchronize users and usermeta into the local/target site.
+	 *
+	 * @param array  $users
+	 * @param array  $usermeta
+	 * @param string $source_prefix
+	 * @return array
+	 */
+	public static function import_users( $users = array(), $usermeta = array(), $source_prefix = 'wp_' ) {
+		global $wpdb;
+
+		if ( empty( $users ) || ! is_array( $users ) ) {
+			return array( 'success' => true, 'users_synced' => 0 );
+		}
+
+		// Group usermeta by source user_id
+		$meta_by_user = array();
+		if ( ! empty( $usermeta ) && is_array( $usermeta ) ) {
+			foreach ( $usermeta as $m ) {
+				$uid = (int) ( $m['user_id'] ?? 0 );
+				if ( $uid > 0 ) {
+					$meta_by_user[ $uid ][] = $m;
+				}
+			}
+		}
+
+		$synced_count  = 0;
+		$target_prefix = $wpdb->prefix;
+
+		foreach ( $users as $u ) {
+			$source_id  = (int) ( $u['ID'] ?? 0 );
+			$user_login = sanitize_user( $u['user_login'] ?? '' );
+			$user_email = sanitize_email( $u['user_email'] ?? '' );
+
+			if ( empty( $user_login ) || empty( $user_email ) ) {
+				continue;
+			}
+
+			// Check if user already exists by login or email
+			$existing = get_user_by( 'login', $user_login );
+			if ( ! $existing ) {
+				$existing = get_user_by( 'email', $user_email );
+			}
+
+			$target_id = 0;
+
+			if ( $existing ) {
+				$target_id = (int) $existing->ID;
+
+				// Update core user fields
+				$update_data = array(
+					'user_nicename' => $u['user_nicename'] ?? $user_login,
+					'user_email'    => $user_email,
+					'user_url'      => $u['user_url'] ?? '',
+					'display_name'  => $u['display_name'] ?? $user_login,
+				);
+				if ( ! empty( $u['user_pass'] ) ) {
+					$update_data['user_pass'] = $u['user_pass'];
+				}
+
+				$wpdb->update( $wpdb->users, $update_data, array( 'ID' => $target_id ) );
+			} else {
+				// User does not exist, insert
+				$id_taken = (int) $wpdb->get_var( $wpdb->prepare( "SELECT ID FROM `{$wpdb->users}` WHERE ID = %d", $source_id ) );
+				if ( $source_id > 0 && ! $id_taken ) {
+					$target_id   = $source_id;
+					$insert_data = array(
+						'ID'                  => $target_id,
+						'user_login'          => $user_login,
+						'user_pass'           => ! empty( $u['user_pass'] ) ? $u['user_pass'] : wp_generate_password( 24 ),
+						'user_nicename'       => $u['user_nicename'] ?? $user_login,
+						'user_email'          => $user_email,
+						'user_url'            => $u['user_url'] ?? '',
+						'user_registered'     => ! empty( $u['user_registered'] ) ? $u['user_registered'] : current_time( 'mysql' ),
+						'user_activation_key' => $u['user_activation_key'] ?? '',
+						'user_status'         => (int) ( $u['user_status'] ?? 0 ),
+						'display_name'        => $u['display_name'] ?? $user_login,
+					);
+					$wpdb->insert( $wpdb->users, $insert_data );
+				} else {
+					$insert_data = array(
+						'user_login'          => $user_login,
+						'user_pass'           => ! empty( $u['user_pass'] ) ? $u['user_pass'] : wp_generate_password( 24 ),
+						'user_nicename'       => $u['user_nicename'] ?? $user_login,
+						'user_email'          => $user_email,
+						'user_url'            => $u['user_url'] ?? '',
+						'user_registered'     => ! empty( $u['user_registered'] ) ? $u['user_registered'] : current_time( 'mysql' ),
+						'user_activation_key' => $u['user_activation_key'] ?? '',
+						'user_status'         => (int) ( $u['user_status'] ?? 0 ),
+						'display_name'        => $u['display_name'] ?? $user_login,
+					);
+					$wpdb->insert( $wpdb->users, $insert_data );
+					$target_id = (int) $wpdb->insert_id;
+				}
+			}
+
+			if ( $target_id <= 0 ) {
+				continue;
+			}
+
+			// Synchronize usermeta
+			if ( isset( $meta_by_user[ $source_id ] ) ) {
+				$skip_keys = array( 'session_tokens', 'vk7k_vault_unlocked_session' );
+
+				foreach ( $meta_by_user[ $source_id ] as $m_row ) {
+					$orig_key = $m_row['meta_key'] ?? '';
+					$meta_val = $m_row['meta_value'] ?? '';
+
+					if ( empty( $orig_key ) || in_array( $orig_key, $skip_keys, true ) ) {
+						continue;
+					}
+
+					// Adapt table prefix in meta_key (e.g. wp_capabilities -> KqV95K_capabilities)
+					$target_key = $orig_key;
+					if ( ! empty( $source_prefix ) && 0 === strpos( $orig_key, $source_prefix ) ) {
+						$target_key = $target_prefix . substr( $orig_key, strlen( $source_prefix ) );
+					}
+
+					$wpdb->delete( $wpdb->usermeta, array( 'user_id' => $target_id, 'meta_key' => $target_key ) );
+					$wpdb->insert( $wpdb->usermeta, array(
+						'user_id'    => $target_id,
+						'meta_key'   => $target_key,
+						'meta_value' => $meta_val,
+					) );
+				}
+			}
+
+			clean_user_cache( $target_id );
+			$synced_count++;
+		}
+
+		return array(
+			'success'      => true,
+			'users_synced' => $synced_count,
+		);
 	}
 }
 

@@ -1,6 +1,6 @@
 # Arquitectura y Catálogo de Métodos - `vk7k-wp-sync` (uxcribe.cl Sync)
 
-> **Versión:** 1.6.5  
+> **Versión:** 1.6.6  
 > **Autor:** Uxcribe.cl  
 > **Propósito:** Sincronización y clonación bidireccional (Push / Pull) de WordPress para bases de datos complejas (WooCommerce, postmeta, options, FSE) con Search & Replace serializado recursivo, sincronización granular desde el editor de bloques (Gutenberg) y transferencia de archivos por lotes/SFTP vía REST API autenticada por HMAC-SHA256.
 

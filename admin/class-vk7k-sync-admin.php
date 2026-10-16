@@ -621,7 +621,7 @@ class VK7K_Sync_Admin {
 								<?php esc_html_e( 'Editor Granular & Recetas', 'vk7k-wp-sync' ); ?>
 							</h3>
 							<p class="vk7k-type-desc">
-								<?php esc_html_e( 'Selecciona páginas, posts, menús, opciones, plugins y temas mediante el DataGrid interactivo y ejecuta o guarda recetas reutilizables.', 'vk7k-wp-sync' ); ?>
+								<?php esc_html_e( 'Selecciona páginas, posts, menús, opciones, usuarios, plugins y temas mediante el DataGrid interactivo y ejecuta o guarda recetas reutilizables.', 'vk7k-wp-sync' ); ?>
 							</p>
 							<button type="button" class="button button-primary vk7k-btn-open-granular-modal" style="width:100%; margin-top:8px;">
 								<span class="dashicons dashicons-table-col-after" style="margin-top:2px;"></span> <?php esc_html_e( 'Abrir Selector Granular', 'vk7k-wp-sync' ); ?>
@@ -1079,6 +1079,10 @@ class VK7K_Sync_Admin {
 								<button type="button" class="vk7k-tab-btn" data-tab="options">
 									<span class="dashicons dashicons-admin-settings"></span> <?php esc_html_e( 'Opciones (wp_options)', 'vk7k-wp-sync' ); ?>
 									<span class="vk7k-tab-count" id="count-options">0</span>
+								</button>
+								<button type="button" class="vk7k-tab-btn" data-tab="users">
+									<span class="dashicons dashicons-admin-users"></span> <?php esc_html_e( 'Usuarios', 'vk7k-wp-sync' ); ?>
+									<span class="vk7k-tab-count" id="count-users">0</span>
 								</button>
 								<button type="button" class="vk7k-tab-btn" data-tab="plugins">
 									<span class="dashicons dashicons-admin-plugins"></span> <?php esc_html_e( 'Plugins', 'vk7k-wp-sync' ); ?>

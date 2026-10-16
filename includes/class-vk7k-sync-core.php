@@ -935,9 +935,10 @@ class VK7K_Sync_Core {
 		$media_synced   = 0;
 		$plugins_synced = 0;
 		$themes_synced  = 0;
+		$users_synced   = 0;
 		$errors         = array();
 
-		$has_db_entities = ! empty( $selection['posts'] ) || ! empty( $selection['media'] ) || ! empty( $selection['menus'] ) || ! empty( $selection['options'] ) || ! empty( $selection['terms'] ) || ! empty( $selection['slug'] );
+		$has_db_entities = ! empty( $selection['posts'] ) || ! empty( $selection['media'] ) || ! empty( $selection['menus'] ) || ! empty( $selection['options'] ) || ! empty( $selection['terms'] ) || ! empty( $selection['users'] ) || ! empty( $selection['slug'] );
 
 		if ( 'pull' === $direction ) {
 			// 1. Pull Database entities and media if selected
@@ -976,6 +977,7 @@ class VK7K_Sync_Core {
 
 				$posts_synced   = count( $package['posts'] ?? array() );
 				$options_synced = count( $package['options'] ?? array() );
+				$users_synced   = count( $package['users'] ?? array() );
 
 				if ( ! empty( $selection['sync_media'] ) && ! empty( $package['media_files'] ) ) {
 					$res_files = VK7K_Sync_Files::pull_specific_files_from_remote( $remote_url, $secret_key, $package['media_files'] );
@@ -1060,6 +1062,7 @@ class VK7K_Sync_Core {
 			$summary_parts = array();
 			if ( $posts_synced > 0 )   $summary_parts[] = sprintf( '%d contenidos', $posts_synced );
 			if ( $options_synced > 0 ) $summary_parts[] = sprintf( '%d opciones', $options_synced );
+			if ( $users_synced > 0 )   $summary_parts[] = sprintf( '%d usuarios', $users_synced );
 			if ( $media_synced > 0 )   $summary_parts[] = sprintf( '%d archivos de medios', $media_synced );
 			if ( $plugins_synced > 0 ) $summary_parts[] = sprintf( '%d plugins', $plugins_synced );
 			if ( $themes_synced > 0 )  $summary_parts[] = sprintf( '%d temas', $themes_synced );
@@ -1068,6 +1071,7 @@ class VK7K_Sync_Core {
 				'message'        => 'Pull granular exitoso: ' . ( ! empty( $summary_parts ) ? implode( ', ', $summary_parts ) : 'sin cambios' ) . ' recibidos.',
 				'posts_synced'   => $posts_synced,
 				'options_synced' => $options_synced,
+				'users_synced'   => $users_synced,
 				'media_synced'   => $media_synced,
 				'plugins_synced' => $plugins_synced,
 				'themes_synced'  => $themes_synced,
@@ -1096,6 +1100,7 @@ class VK7K_Sync_Core {
 
 			$posts_synced   = $res['posts_synced'] ?? count( $package['posts'] ?? array() );
 			$options_synced = $res['options_synced'] ?? count( $package['options'] ?? array() );
+			$users_synced   = $res['users_synced'] ?? count( $package['users'] ?? array() );
 
 			if ( ! empty( $selection['sync_media'] ) && ! empty( $package['media_files'] ) ) {
 				$rel_paths = wp_list_pluck( $package['media_files'], 'rel_path' );
@@ -1149,6 +1154,7 @@ class VK7K_Sync_Core {
 		$summary_parts = array();
 		if ( $posts_synced > 0 )   $summary_parts[] = sprintf( '%d entradas/páginas', $posts_synced );
 		if ( $options_synced > 0 ) $summary_parts[] = sprintf( '%d opciones', $options_synced );
+		if ( $users_synced > 0 )   $summary_parts[] = sprintf( '%d usuarios', $users_synced );
 		if ( $media_synced > 0 )   $summary_parts[] = sprintf( '%d archivos de medios', $media_synced );
 		if ( $plugins_synced > 0 ) $summary_parts[] = sprintf( '%d plugins', $plugins_synced );
 		if ( $themes_synced > 0 )  $summary_parts[] = sprintf( '%d temas', $themes_synced );
@@ -1162,6 +1168,7 @@ class VK7K_Sync_Core {
 			'message'        => $msg,
 			'posts_synced'   => $posts_synced,
 			'options_synced' => $options_synced,
+			'users_synced'   => $users_synced,
 			'media_synced'   => $media_synced,
 			'plugins_synced' => $plugins_synced,
 			'themes_synced'  => $themes_synced,

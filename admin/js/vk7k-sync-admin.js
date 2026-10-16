@@ -20,6 +20,7 @@
 		options: [],
 		plugins: [],
 		themes: [],
+		users: [],
 		sync_media: true
 	};
 
@@ -1044,6 +1045,7 @@
 			(currentSelection.media || []).length +
 			(currentSelection.menus || []).length +
 			(currentSelection.options || []).length +
+			(currentSelection.users || []).length +
 			(currentSelection.plugins || []).length +
 			(currentSelection.themes || []).length +
 			(currentSelection.terms || []).length
@@ -1110,6 +1112,7 @@
 			if ((currentSelection.media || []).length) parts.push(`${currentSelection.media.length} Medios`);
 			if ((currentSelection.menus || []).length) parts.push(`${currentSelection.menus.length} Menús`);
 			if ((currentSelection.options || []).length) parts.push(`${currentSelection.options.length} Opciones`);
+			if ((currentSelection.users || []).length) parts.push(`${currentSelection.users.length} Usuarios`);
 			if ((currentSelection.plugins || []).length) parts.push(`${currentSelection.plugins.length} Plugins`);
 			if ((currentSelection.themes || []).length) parts.push(`${currentSelection.themes.length} Temas`);
 			if ((currentSelection.terms || []).length) parts.push(`${currentSelection.terms.length} Taxonomías`);
@@ -2357,6 +2360,7 @@
 				options: [],
 				plugins: [],
 				themes: [],
+				users: [],
 				sync_media: $('#vk7k-chk-include-media').is(':checked')
 			};
 			$('#vk7k-grid-tbody .vk7k-row-checkbox').prop('checked', false);
@@ -2430,11 +2434,13 @@
 					options: [],
 					plugins: [],
 					themes: [],
+					users: [],
 					sync_media: true
 				}, recipe.entities);
 				currentSelection.media = recipe.entities.media || recipe.media || [];
 				currentSelection.plugins = recipe.entities.plugins || recipe.plugins || [];
 				currentSelection.themes = recipe.entities.themes || recipe.themes || [];
+				currentSelection.users = recipe.entities.users || recipe.users || [];
 				currentSelection.sync_media = typeof recipe.sync_media !== 'undefined' ? !!recipe.sync_media : true;
 				$('#vk7k-chk-include-media').prop('checked', currentSelection.sync_media);
 				$('#vk7k-active-recipe-name').text(recipe.name + ' (' + (recipe.description || 'personalizada') + ')');
@@ -2453,10 +2459,11 @@
 				(currentSelection.menus || []).length +
 				(currentSelection.options || []).length +
 				(currentSelection.plugins || []).length +
-				(currentSelection.themes || []).length
+				(currentSelection.themes || []).length +
+				(currentSelection.users || []).length
 			);
 			if (total === 0) {
-				alert('Selecciona al menos una entidad (página, entrada, medio, menú, opción, plugin o tema) para sincronizar.');
+				alert('Selecciona al menos una entidad (página, entrada, medio, menú, opción, usuario, plugin o tema) para sincronizar.');
 				return;
 			}
 
@@ -2511,6 +2518,9 @@
 					if (typeof res.data.themes_count !== 'undefined') {
 						$('#count-themes').attr('title', 'Total instalados: ' + res.data.themes_count);
 					}
+					if (typeof res.data.users_count !== 'undefined') {
+						$('#count-users').attr('title', 'Total registrados: ' + res.data.users_count);
+					}
 				}
 			});
 		}
@@ -2526,6 +2536,7 @@
 			if (currentTab === 'menus') queryType = 'nav_menu_item';
 			if (currentTab === 'plugins') queryType = 'plugins';
 			if (currentTab === 'themes') queryType = 'themes';
+			if (currentTab === 'users') queryType = 'users';
 
 			$.post(vk7kSyncData.ajaxUrl, {
 				action: 'vk7k_sync_granular_query',
@@ -2579,13 +2590,15 @@
 				// Title & Thumbnail / Info
 				html += '<td>';
 				if (item.thumb_url) {
-					html += '<img src="' + item.thumb_url + '" class="vk7k-grid-thumb" />';
+					html += '<img src="' + item.thumb_url + '" class="vk7k-grid-thumb" ' + (currentTab === 'users' ? 'style="border-radius:50%; width:24px; height:24px; vertical-align:middle; margin-right:6px;"' : '') + ' />';
 				}
 				html += '<strong>' + escapeHtml(item.title || item.name) + '</strong>';
 				if (item.version) {
 					html += ' <span style="display:inline-block; font-size:0.72rem; background:#f1f5f9; color:#475569; padding:1px 5px; border-radius:4px; font-weight:600;">v' + escapeHtml(item.version) + '</span>';
 				}
-				if (item.author) {
+				if (item.email) {
+					html += '<div style="font-size:0.72rem; color:#64748b; line-height:1.2; margin-top:1px;">✉️ ' + escapeHtml(item.email) + '</div>';
+				} else if (item.author) {
 					html += '<div style="font-size:0.72rem; color:#64748b; line-height:1.2; margin-top:1px;">De: ' + escapeHtml(item.author) + '</div>';
 				} else if (item.preview) {
 					html += '<div style="font-size:0.72rem; color:#64748b; font-family:monospace; line-height:1.2; margin-top:1px;">' + escapeHtml(item.preview) + '</div>';
@@ -2597,7 +2610,9 @@
 
 				// Status
 				html += '<td>';
-				if (item.status === 'active') {
+				if (currentTab === 'users' && item.role) {
+					html += '<span class="vk7k-status-badge" style="background:#e0f2fe; color:#0369a1; font-weight:700;">' + escapeHtml(item.role.toUpperCase()) + '</span>';
+				} else if (item.status === 'active') {
 					html += '<span class="vk7k-status-badge publish" style="background:#dcfce7; color:#166534; font-weight:700;">ACTIVO</span>';
 				} else if (item.status === 'inactive') {
 					html += '<span class="vk7k-status-badge draft" style="background:#f1f5f9; color:#64748b;">INACTIVO</span>';
@@ -2627,6 +2642,7 @@
 			if (tab === 'media') return (currentSelection.media || []).indexOf(intId) !== -1;
 			if (tab === 'menus') return (currentSelection.menus || []).indexOf(intId) !== -1;
 			if (tab === 'taxonomies') return (currentSelection.terms || []).indexOf(intId) !== -1;
+			if (tab === 'users') return (currentSelection.users || []).indexOf(intId) !== -1;
 			return false;
 		}
 
@@ -2661,6 +2677,10 @@
 				currentSelection.terms = currentSelection.terms || [];
 				list = currentSelection.terms;
 				val = parseInt(id) || id;
+			} else if (tab === 'users') {
+				currentSelection.users = currentSelection.users || [];
+				list = currentSelection.users;
+				val = parseInt(id) || id;
 			}
 
 			const idx = list.indexOf(val);
@@ -2678,7 +2698,8 @@
 			const oCount = (currentSelection.options || []).length;
 			const plCount = (currentSelection.plugins || []).length;
 			const thCount = (currentSelection.themes || []).length;
-			const total = pCount + medCount + mCount + oCount + plCount + thCount;
+			const uCount = (currentSelection.users || []).length;
+			const total = pCount + medCount + mCount + oCount + plCount + thCount + uCount;
 
 			$('#vk7k-total-selected-count').text(total);
 			$('#count-pages').text(pCount);
@@ -2686,6 +2707,7 @@
 			$('#count-media').text(medCount);
 			$('#count-menus').text(mCount);
 			$('#count-options').text(oCount);
+			$('#count-users').text(uCount);
 			$('#count-plugins').text(plCount);
 			$('#count-themes').text(thCount);
 
@@ -2694,6 +2716,7 @@
 			if (medCount) parts.push(medCount + ' medios');
 			if (mCount) parts.push(mCount + ' menús');
 			if (oCount) parts.push(oCount + ' opciones');
+			if (uCount) parts.push(uCount + ' usuarios');
 			if (plCount) parts.push(plCount + ' plugins');
 			if (thCount) parts.push(thCount + ' temas');
 
