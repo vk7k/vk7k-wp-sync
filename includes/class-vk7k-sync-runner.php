@@ -47,23 +47,19 @@ class VK7K_Sync_Runner {
 		$headers['Content-Type'] = ! empty( $content_type ) ? $content_type : 'application/json; charset=utf-8';
 		$headers['Accept']       = ! empty( $stream_to_file ) ? 'application/zip, application/json' : 'application/json';
 
-		$curl_hook = null;
-		if ( ! empty( $remote_ip ) ) {
-			$parsed = parse_url( $remote_url );
-			$host   = isset( $parsed['host'] ) ? $parsed['host'] : '';
-			$port   = isset( $parsed['port'] ) ? $parsed['port'] : ( ( isset( $parsed['scheme'] ) && 'https' === $parsed['scheme'] ) ? 443 : 80 );
-
-			if ( ! empty( $host ) ) {
-				$curl_hook = function( &$handle ) use ( $host, $port, $remote_ip ) {
-					if ( defined( 'CURLOPT_RESOLVE' ) ) {
-						curl_setopt( $handle, CURLOPT_RESOLVE, array( "{$host}:{$port}:{$remote_ip}" ) );
-					}
-					curl_setopt( $handle, CURLOPT_SSL_VERIFYPEER, false );
-					curl_setopt( $handle, CURLOPT_SSL_VERIFYHOST, false );
-				};
-				add_action( 'http_api_curl', $curl_hook, 10, 1 );
+		$curl_hook = function( &$handle ) use ( $remote_url, $remote_ip ) {
+			if ( ! empty( $remote_ip ) ) {
+				$parsed = parse_url( $remote_url );
+				$host   = isset( $parsed['host'] ) ? $parsed['host'] : '';
+				$port   = isset( $parsed['port'] ) ? $parsed['port'] : ( ( isset( $parsed['scheme'] ) && 'https' === $parsed['scheme'] ) ? 443 : 80 );
+				if ( ! empty( $host ) && defined( 'CURLOPT_RESOLVE' ) ) {
+					curl_setopt( $handle, CURLOPT_RESOLVE, array( "{$host}:{$port}:{$remote_ip}" ) );
+				}
 			}
-		}
+			curl_setopt( $handle, CURLOPT_SSL_VERIFYPEER, false );
+			curl_setopt( $handle, CURLOPT_SSL_VERIFYHOST, false );
+		};
+		add_action( 'http_api_curl', $curl_hook, 10, 1 );
 
 		$request_args = array(
 			'timeout'     => 180,
