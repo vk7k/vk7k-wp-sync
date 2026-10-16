@@ -385,7 +385,7 @@ class VK7K_Sync_Replacer {
 
 		// 1. Check if serialized PHP
 		if ( $this->is_serialized( $string ) ) {
-			$unserialized = @unserialize( $string );
+			$unserialized = @unserialize( $string, array( 'allowed_classes' => array( 'stdClass' ) ) );
 			if ( false !== $unserialized || 'b:0;' === $string ) {
 				$processed = $this->replace( $unserialized );
 				return serialize( $processed );

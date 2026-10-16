@@ -497,7 +497,8 @@ class VK7K_Sync_API {
 			$replacer = new VK7K_Sync_Replacer( $replacements );
 		}
 
-		$chunk = VK7K_Sync_DB::export_table_chunk( $table_name, $offset, $limit, $replacer, $target_prefix, $is_schema_only );
+		$known_total = isset( $params['total_rows'] ) ? (int) $params['total_rows'] : null;
+		$chunk = VK7K_Sync_DB::export_table_chunk( $table_name, $offset, $limit, $replacer, $target_prefix, $is_schema_only, $known_total );
 
 		if ( 0 === $offset ) {
 			$chunk['schema'] = VK7K_Sync_DB::get_table_schema( $table_name );

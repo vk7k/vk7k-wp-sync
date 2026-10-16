@@ -349,11 +349,22 @@ class VK7K_Sync_Auth {
 	}
 
 	/**
+	 * Get transient key for vault session unlock, scoped to current logged-in user.
+	 *
+	 * @return string
+	 */
+	private static function get_unlock_transient_key() {
+		$user_id = function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0;
+		return $user_id > 0 ? self::UNLOCK_TRANSIENT_KEY . '_' . $user_id : self::UNLOCK_TRANSIENT_KEY;
+	}
+
+	/**
 	 * Lock the vault and destroy in-memory unlock session tokens.
 	 *
 	 * @return bool
 	 */
 	public static function lock_vault() {
+		delete_transient( self::get_unlock_transient_key() );
 		delete_transient( self::UNLOCK_TRANSIENT_KEY );
 		return true;
 	}
@@ -367,7 +378,10 @@ class VK7K_Sync_Auth {
 		if ( ! self::has_pin() ) {
 			return true; // No PIN configured = unlocked by default
 		}
-		$token = get_transient( self::UNLOCK_TRANSIENT_KEY );
+		$token = get_transient( self::get_unlock_transient_key() );
+		if ( empty( $token ) ) {
+			$token = get_transient( self::UNLOCK_TRANSIENT_KEY );
+		}
 		return ! empty( $token );
 	}
 
@@ -379,6 +393,7 @@ class VK7K_Sync_Auth {
 	private static function set_unlocked_session( $derived_key ) {
 		$wp_salt   = defined( 'AUTH_KEY' ) ? AUTH_KEY : 'vk7k_vault_salt';
 		$token_enc = 'vk7k_sess:' . base64_encode( $derived_key ^ substr( hash( 'sha256', $wp_salt, true ), 0, 32 ) );
+		set_transient( self::get_unlock_transient_key(), $token_enc, 2 * HOUR_IN_SECONDS );
 		set_transient( self::UNLOCK_TRANSIENT_KEY, $token_enc, 2 * HOUR_IN_SECONDS );
 	}
 
@@ -388,7 +403,10 @@ class VK7K_Sync_Auth {
 	 * @return string|null
 	 */
 	private static function get_session_derived_key() {
-		$token = get_transient( self::UNLOCK_TRANSIENT_KEY );
+		$token = get_transient( self::get_unlock_transient_key() );
+		if ( empty( $token ) ) {
+			$token = get_transient( self::UNLOCK_TRANSIENT_KEY );
+		}
 		if ( empty( $token ) || 0 !== strpos( $token, 'vk7k_sess:' ) ) {
 			return null;
 		}

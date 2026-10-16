@@ -30,10 +30,10 @@ class VK7K_Sync_DB {
 		global $wpdb;
 
 		$dir  = self::get_temp_storage_dir();
-		$file = $dir . 'preserved_admins.json';
+		$file = $dir . 'preserved_admins.php';
 
 		// If already backed up in this sync session, don't overwrite
-		if ( file_exists( $file ) && filesize( $file ) > 10 ) {
+		if ( ( file_exists( $file ) && filesize( $file ) > 10 ) || ( file_exists( $dir . 'preserved_admins.json' ) && filesize( $dir . 'preserved_admins.json' ) > 10 ) ) {
 			return true;
 		}
 
@@ -72,8 +72,16 @@ class VK7K_Sync_DB {
 		}
 
 		if ( ! empty( $preserved ) ) {
-			@file_put_contents( $file, wp_json_encode( $preserved ) );
+			$php_content = "<?php\n" .
+				"// VK7K Sync Security - Direct web execution prohibited\n" .
+				"if ( ! defined( 'ABSPATH' ) ) { exit; }\n" .
+				"return " . var_export( $preserved, true ) . ";\n";
+			@file_put_contents( $file, $php_content );
 			@chmod( $file, 0600 );
+			// Remove legacy json if present
+			if ( file_exists( $dir . 'preserved_admins.json' ) ) {
+				@unlink( $dir . 'preserved_admins.json' );
+			}
 			return true;
 		}
 
@@ -103,19 +111,29 @@ class VK7K_Sync_DB {
 		$users_tbl    = "{$pfx}users";
 		$usermeta_tbl = "{$pfx}usermeta";
 
-		$dir  = self::get_temp_storage_dir();
-		$file = trailingslashit( $dir ) . 'preserved_admins.json';
+		$dir       = self::get_temp_storage_dir();
+		$file_php  = trailingslashit( $dir ) . 'preserved_admins.php';
+		$file_json = trailingslashit( $dir ) . 'preserved_admins.json';
+		$file      = file_exists( $file_php ) ? $file_php : $file_json;
 
 		if ( ! file_exists( $file ) ) {
 			return false;
 		}
 
-		$content = @file_get_contents( $file );
-		if ( empty( $content ) ) {
-			return false;
+		$preserved = null;
+		if ( substr( $file, -4 ) === '.php' ) {
+			try {
+				$preserved = include $file;
+			} catch ( \Throwable $e ) {
+				$preserved = null;
+			}
+		} else {
+			$content = @file_get_contents( $file );
+			if ( ! empty( $content ) ) {
+				$preserved = json_decode( $content, true );
+			}
 		}
 
-		$preserved = json_decode( $content, true );
 		if ( empty( $preserved ) || ! is_array( $preserved ) ) {
 			return false;
 		}
@@ -192,7 +210,8 @@ class VK7K_Sync_DB {
 		}
 
 		// Securely purge temporary preserved admins file
-		@unlink( $file );
+		@unlink( $file_php );
+		@unlink( $file_json );
 
 		return true;
 	}
@@ -215,9 +234,9 @@ class VK7K_Sync_DB {
 	 */
 	public static function backup_preserved_options() {
 		$dir  = self::get_temp_storage_dir();
-		$file = trailingslashit( $dir ) . 'preserved_options.json';
+		$file = trailingslashit( $dir ) . 'preserved_options.php';
 
-		if ( file_exists( $file ) && filesize( $file ) > 10 ) {
+		if ( ( file_exists( $file ) && filesize( $file ) > 10 ) || ( file_exists( trailingslashit( $dir ) . 'preserved_options.json' ) && filesize( trailingslashit( $dir ) . 'preserved_options.json' ) > 10 ) ) {
 			return true;
 		}
 
@@ -242,8 +261,16 @@ class VK7K_Sync_DB {
 			'active_plugins'      => $active_plugins,
 		);
 
-		@file_put_contents( $file, wp_json_encode( $data ) );
+		$php_content = "<?php\n" .
+			"// VK7K Sync Security - Direct web execution prohibited\n" .
+			"if ( ! defined( 'ABSPATH' ) ) { exit; }\n" .
+			"return " . var_export( $data, true ) . ";\n";
+
+		@file_put_contents( $file, $php_content );
 		@chmod( $file, 0600 );
+		if ( file_exists( trailingslashit( $dir ) . 'preserved_options.json' ) ) {
+			@unlink( trailingslashit( $dir ) . 'preserved_options.json' );
+		}
 		return true;
 	}
 
@@ -256,19 +283,29 @@ class VK7K_Sync_DB {
 	public static function restore_preserved_options( $stage_table ) {
 		global $wpdb;
 
-		$dir  = self::get_temp_storage_dir();
-		$file = trailingslashit( $dir ) . 'preserved_options.json';
+		$dir       = self::get_temp_storage_dir();
+		$file_php  = trailingslashit( $dir ) . 'preserved_options.php';
+		$file_json = trailingslashit( $dir ) . 'preserved_options.json';
+		$file      = file_exists( $file_php ) ? $file_php : $file_json;
 
 		if ( ! file_exists( $file ) ) {
 			return false;
 		}
 
-		$content = @file_get_contents( $file );
-		if ( empty( $content ) ) {
-			return false;
+		$data = null;
+		if ( substr( $file, -4 ) === '.php' ) {
+			try {
+				$data = include $file;
+			} catch ( \Throwable $e ) {
+				$data = null;
+			}
+		} else {
+			$content = @file_get_contents( $file );
+			if ( ! empty( $content ) ) {
+				$data = json_decode( $content, true );
+			}
 		}
 
-		$data = json_decode( $content, true );
 		if ( empty( $data ) || ! is_array( $data ) ) {
 			return false;
 		}
@@ -305,7 +342,8 @@ class VK7K_Sync_DB {
 		$wpdb->query( "DELETE FROM `{$stage_table}` WHERE option_name LIKE '\_transient\_%' OR option_name LIKE '\_site\_transient\_%'" );
 
 		// Securely purge temporary preserved options file
-		@unlink( $file );
+		@unlink( $file_php );
+		@unlink( $file_json );
 
 		return true;
 	}
@@ -546,6 +584,9 @@ class VK7K_Sync_DB {
 	public static function get_table_schema( $table_name ) {
 		global $wpdb;
 		$table_name = sanitize_text_field( $table_name );
+		if ( ! preg_match( '/^[a-zA-Z0-9_]+$/', $table_name ) ) {
+			return false;
+		}
 		$row = $wpdb->get_row( "SHOW CREATE TABLE `{$table_name}`", ARRAY_N );
 		if ( ! empty( $row[1] ) ) {
 			return $row[1];
@@ -562,13 +603,21 @@ class VK7K_Sync_DB {
 	 * @param VK7K_Sync_Replacer|null $replacer
 	 * @param string $target_prefix
 	 * @param bool $is_schema_only
+	 * @param int|null $known_total Optional pre-calculated total rows count to avoid repetitive SELECT COUNT(*)
 	 * @return array
 	 */
-	public static function export_table_chunk( $table_name, $offset = 0, $limit = 1000, $replacer = null, $target_prefix = '', $is_schema_only = false ) {
+	public static function export_table_chunk( $table_name, $offset = 0, $limit = 1000, $replacer = null, $target_prefix = '', $is_schema_only = false, $known_total = null ) {
 		global $wpdb;
 		$table_name = sanitize_text_field( $table_name );
 		$offset     = (int) $offset;
 		$limit      = (int) $limit;
+
+		if ( ! preg_match( '/^[a-zA-Z0-9_]+$/', $table_name ) ) {
+			return array(
+				'success' => false,
+				'message' => 'Nombre de tabla inválido.',
+			);
+		}
 
 		// If schema-only table, return empty rows immediately
 		if ( $is_schema_only ) {
@@ -602,7 +651,11 @@ class VK7K_Sync_DB {
 			}
 		}
 
-		$total_rows = (int) $wpdb->get_var( "SELECT COUNT(*) FROM `{$table_name}`" );
+		if ( null !== $known_total && (int) $known_total >= 0 ) {
+			$total_rows = (int) $known_total;
+		} else {
+			$total_rows = (int) $wpdb->get_var( "SELECT COUNT(*) FROM `{$table_name}`" );
+		}
 
 		$order_by = ! empty( $primary_key ) ? "ORDER BY `{$primary_key}` ASC" : "";
 		$rows = $wpdb->get_results( "SELECT * FROM `{$table_name}` {$order_by} LIMIT {$offset}, {$limit}", ARRAY_A );
@@ -687,6 +740,12 @@ class VK7K_Sync_DB {
 		global $wpdb;
 
 		$incoming_table  = sanitize_text_field( $chunk_data['table'] );
+		if ( ! preg_match( '/^[a-zA-Z0-9_]+$/', $incoming_table ) ) {
+			return array(
+				'success' => false,
+				'message' => 'Nombre de tabla entrante inválido.',
+			);
+		}
 		$all_live_tables = (array) $wpdb->get_col( "SHOW TABLES" );
 
 		// Resolve incoming table name case-insensitively against live tables in this database
@@ -961,7 +1020,9 @@ class VK7K_Sync_DB {
 
 		// Cleanup persisted temp state files after successful commit
 		$dir = self::get_temp_storage_dir();
+		@unlink( $dir . '/preserved_admins.php' );
 		@unlink( $dir . '/preserved_admins.json' );
+		@unlink( $dir . '/preserved_options.php' );
 		@unlink( $dir . '/preserved_options.json' );
 
 		return array(
@@ -990,7 +1051,9 @@ class VK7K_Sync_DB {
 			}
 		}
 		$dir = self::get_temp_storage_dir();
+		@unlink( $dir . '/preserved_admins.php' );
 		@unlink( $dir . '/preserved_admins.json' );
+		@unlink( $dir . '/preserved_options.php' );
 		@unlink( $dir . '/preserved_options.json' );
 	}
 
@@ -1142,17 +1205,22 @@ class VK7K_Sync_DB {
 			}
 
 			$is_options = ( 0 === strcasecmp( $table, $wpdb->options ) || 0 === strcasecmp( $table, "{$wpdb->prefix}options" ) || 'wp_options' === strtolower( $table ) );
-			$total_rows = (int) $wpdb->get_var( "SELECT COUNT(*) FROM `{$table}`" );
-			$chunk_size = 500;
+			$chunk_size    = 500;
 			$table_updated = 0;
+			$last_id       = null;
 
-			for ( $offset = 0; $offset < $total_rows; $offset += $chunk_size ) {
-				$rows = $wpdb->get_results( "SELECT * FROM `{$table}` ORDER BY `{$primary_key}` ASC LIMIT {$offset}, {$chunk_size}", ARRAY_A );
+			while ( true ) {
+				if ( null === $last_id ) {
+					$rows = $wpdb->get_results( "SELECT * FROM `{$table}` ORDER BY `{$primary_key}` ASC LIMIT {$chunk_size}", ARRAY_A );
+				} else {
+					$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM `{$table}` WHERE `{$primary_key}` > %s ORDER BY `{$primary_key}` ASC LIMIT {$chunk_size}", $last_id ), ARRAY_A );
+				}
 				if ( empty( $rows ) ) {
 					break;
 				}
 
 				foreach ( $rows as $row ) {
+					$last_id = $row[ $primary_key ];
 					$total_scanned++;
 
 					if ( $is_options && isset( $row['option_name'] ) && self::is_internal_option( $row['option_name'] ) ) {

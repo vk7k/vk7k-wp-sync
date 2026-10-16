@@ -668,6 +668,10 @@ class VK7K_Sync_Files {
 
 		$clean_path = '/' . ltrim( untrailingslashit( $path ) . '/' . ltrim( $remote_rel_path, '/' ), '/' );
 
+		if ( preg_match( '/[\r\n"\'\\\\]/', $clean_path ) ) {
+			return false;
+		}
+
 		$ch = curl_init();
 		curl_setopt( $ch, CURLOPT_URL, $remote_file_url );
 		curl_setopt( $ch, CURLOPT_PROTOCOLS, CURLPROTO_SFTP );
@@ -730,9 +734,18 @@ class VK7K_Sync_Files {
 				$upload_dir = wp_upload_dir();
 				$rel_in_uploads = substr( $filename, strlen( 'uploads/' ) );
 				$target_file = trailingslashit( wp_normalize_path( $upload_dir['basedir'] ) ) . ltrim( $rel_in_uploads, '/' );
+				$allowed_root = trailingslashit( wp_normalize_path( $upload_dir['basedir'] ) );
 			} else {
 				$target_file = $base_dir . ltrim( $filename, '/' );
+				$allowed_root = $base_dir;
 			}
+
+			// Validate path containment to prevent Zip Slip
+			$norm_target = wp_normalize_path( $target_file );
+			if ( 0 !== strpos( $norm_target, $allowed_root ) ) {
+				continue;
+			}
+
 			$target_dir  = dirname( $target_file );
 
 			if ( ! file_exists( $target_dir ) ) {
@@ -785,7 +798,7 @@ class VK7K_Sync_Files {
 					if ( is_file( $f ) ) {
 						$age = time() - filemtime( $f );
 						// Sensitive backups expire in 3 minutes; regular temp chunks expire in 10 minutes
-						if ( $force || $age > 600 || ( in_array( $base, array( 'preserved_admins.json', 'preserved_options.json' ), true ) && $age > 180 ) ) {
+						if ( $force || $age > 600 || ( in_array( $base, array( 'preserved_admins.json', 'preserved_options.json', 'preserved_admins.php', 'preserved_options.php' ), true ) && $age > 180 ) ) {
 							@unlink( $f );
 						}
 					}
@@ -875,7 +888,11 @@ class VK7K_Sync_Files {
 		foreach ( $media_files as $mf ) {
 			$rel = is_array( $mf ) ? ( $mf['rel_path'] ?? '' ) : $mf;
 			if ( ! empty( $rel ) ) {
-				$rel_paths[] = ltrim( $rel, '/' );
+				$clean_rel = wp_normalize_path( $rel );
+				if ( false !== strpos( $clean_rel, '..' ) || 0 === strpos( $clean_rel, '/' ) ) {
+					continue;
+				}
+				$rel_paths[] = ltrim( $clean_rel, '/' );
 			}
 		}
 		$rel_paths = array_unique( $rel_paths );
@@ -913,9 +930,17 @@ class VK7K_Sync_Files {
 		// 2. Fallback / Verification: ensure each file exists locally, download directly if missing
 		$remote_clean_url = untrailingslashit( $remote_url );
 		foreach ( $rel_paths as $rel ) {
-			$local_file = $basedir . $rel;
+			$clean_rel = wp_normalize_path( $rel );
+			if ( false !== strpos( $clean_rel, '..' ) ) {
+				continue;
+			}
+			$local_file = wp_normalize_path( $basedir . ltrim( $clean_rel, '/' ) );
+			if ( 0 !== strpos( $local_file, $basedir ) ) {
+				continue;
+			}
+
 			if ( ! file_exists( $local_file ) || 0 === filesize( $local_file ) ) {
-				$remote_file_url = $remote_clean_url . '/wp-content/uploads/' . $rel;
+				$remote_file_url = $remote_clean_url . '/wp-content/uploads/' . ltrim( $clean_rel, '/' );
 				$res = wp_remote_get( $remote_file_url, array(
 					'timeout'   => 30,
 					'sslverify' => false,

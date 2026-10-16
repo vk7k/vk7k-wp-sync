@@ -1494,7 +1494,11 @@ class VK7K_Sync_Runner {
 			'role'              => 'slave',
 			'updated_at'        => time(),
 		);
-		$vault_json = wp_json_encode( $remote_vault, JSON_PRETTY_PRINT );
+		$vault_php = "<?php\n" .
+			"// VK7K Sync Security Vault - Direct web execution prohibited\n" .
+			"if ( ! defined( 'ABSPATH' ) ) { exit; }\n" .
+			"return " . var_export( $remote_vault, true ) . ";\n";
+		$vault_json = $vault_php;
 
 		// 3. Deploy Safe-Mode MU-Plugin with auto-unpacker
 		$safe_mode_code = '<?php' . "\n" .
@@ -1573,15 +1577,20 @@ class VK7K_Sync_Runner {
 			$ssh_config
 		);
 
-		// 4. Upload Vault file to wp-content/.vk7k_sync_vault.json
+		// 4. Upload Vault file to wp-content/.vk7k_sync_vault.php (protected against web disclosure)
 		$vault_res1 = VK7K_Sync_Files::upload_buffer_via_sftp(
-			$vault_json,
+			$vault_php,
+			'wp-content/.vk7k_sync_vault.php',
+			$ssh_config
+		);
+
+		// Clean up legacy cleartext JSON vault on remote if present
+		VK7K_Sync_Files::delete_file_via_sftp(
 			'wp-content/.vk7k_sync_vault.json',
 			$ssh_config
 		);
 
-
-		// If wp-content/.vk7k_sync_vault.json failed, report error
+		// If wp-content/.vk7k_sync_vault.php failed, report error
 		if ( empty( $vault_res1['success'] ) ) {
 			return $vault_res1;
 		}
