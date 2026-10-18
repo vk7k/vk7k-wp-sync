@@ -368,6 +368,8 @@ class VK7K_Sync_Files {
 			'wp-content/uploads/wpforms/.cache',
 			'.DS_Store',
 			'Thumbs.db',
+			'.vk7k_sync_vault',
+			'preserved_admins',
 		);
 
 		foreach ( $blacklists as $pattern ) {
@@ -941,7 +943,7 @@ class VK7K_Sync_Files {
 
 			if ( ! file_exists( $local_file ) || 0 === filesize( $local_file ) ) {
 				$remote_file_url = $remote_clean_url . '/wp-content/uploads/' . ltrim( $clean_rel, '/' );
-				$res = wp_remote_get( $remote_file_url, array(
+				$res = wp_safe_remote_get( $remote_file_url, array(
 					'timeout'   => 30,
 					'sslverify' => false,
 				) );
