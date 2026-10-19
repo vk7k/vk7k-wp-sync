@@ -155,7 +155,7 @@ class VK7K_Sync_Admin {
 
 		$active_target = VK7K_Sync_Auth::get_active_target();
 		$settings      = VK7K_Sync_Auth::get_settings();
-		$remote_url    = ! empty( $active_target['url'] ) ? $active_target['url'] : ( $settings['remote_url'] ?? '' );
+		$remote_url    = ! empty( $active_target['remote_url'] ) ? $active_target['remote_url'] : ( ! empty( $active_target['url'] ) ? $active_target['url'] : ( $settings['remote_url'] ?? '' ) );
 		$target_name   = ! empty( $active_target['name'] ) ? $active_target['name'] : ( ! empty( $remote_url ) ? wp_parse_url( $remote_url, PHP_URL_HOST ) : '' );
 
 		global $post;

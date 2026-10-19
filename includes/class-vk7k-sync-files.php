@@ -815,9 +815,10 @@ class VK7K_Sync_Files {
 	 * @param string $remote_url
 	 * @param string $secret_key
 	 * @param array  $rel_paths Array of relative paths under uploads/
+	 * @param string $remote_ip Optional remote IP address for direct resolution.
 	 * @return array|WP_Error
 	 */
-	public static function send_specific_files_to_remote( $remote_url, $secret_key, $rel_paths ) {
+	public static function send_specific_files_to_remote( $remote_url, $secret_key, $rel_paths, $remote_ip = '' ) {
 		if ( empty( $rel_paths ) || ! class_exists( 'ZipArchive' ) ) {
 			return array( 'uploaded' => 0 );
 		}
@@ -856,7 +857,8 @@ class VK7K_Sync_Files {
 			'files/upload-chunk',
 			$raw_data,
 			$remote_url,
-			$secret_key
+			$secret_key,
+			$remote_ip
 		);
 
 		if ( is_wp_error( $res ) ) {
@@ -875,9 +877,10 @@ class VK7K_Sync_Files {
 	 * @param string $remote_url
 	 * @param string $secret_key
 	 * @param array  $media_files Array of media info arrays with 'rel_path' or array of relative paths.
+	 * @param string $remote_ip   Optional remote IP address for direct resolution.
 	 * @return array
 	 */
-	public static function pull_specific_files_from_remote( $remote_url, $secret_key, $media_files ) {
+	public static function pull_specific_files_from_remote( $remote_url, $secret_key, $media_files, $remote_ip = '' ) {
 		if ( empty( $media_files ) ) {
 			return array( 'success' => true, 'downloaded' => 0 );
 		}
@@ -918,7 +921,8 @@ class VK7K_Sync_Files {
 			),
 			$temp_zip,
 			$remote_url,
-			$secret_key
+			$secret_key,
+			$remote_ip
 		);
 
 		if ( ! is_wp_error( $dl_res ) && file_exists( $temp_zip ) && filesize( $temp_zip ) > 0 ) {

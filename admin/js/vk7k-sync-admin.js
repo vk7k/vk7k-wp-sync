@@ -688,7 +688,8 @@
 						nonce: vk7kSyncData.nonce,
 						remote_url: remoteUrl,
 						secret_key: remoteKey,
-						remote_ip: remoteIp
+						remote_ip: remoteIp,
+						use_ssh: isSsh ? 1 : 0
 					}
 				});
 
@@ -697,6 +698,9 @@
 				}
 
 				isConnectionVerified = true;
+				if (testRes.data && testRes.data.active_target) {
+					vk7kSyncData.activeTarget = testRes.data.active_target;
+				}
 				const siteName  = testRes.data.site_name || remoteUrl;
 				const wpVer     = testRes.data.wp_version ? ` (WP v${testRes.data.wp_version})` : '';
 				const pluginVer = testRes.data.plugin_version ? ` • Plugin v${testRes.data.plugin_version}` : '';
@@ -705,9 +709,9 @@
 					const rVer = testRes.data.remote_version || testRes.data.plugin_version;
 					const lVer = testRes.data.local_version || '1.3.4';
 					const deployBtn = `<button type="button" class="button button-small vk7k-manual-deploy-btn" style="margin-left:8px;"><span class="dashicons dashicons-upload" style="vertical-align:middle;font-size:15px;width:15px;height:15px;"></span> Desplegar v${lVer} local al remoto</button>`;
-					showConnectionAlert('warning', `<strong>⚠️ Conexión establecida con discrepancia de versión:</strong> ${siteName}${wpVer} tiene Plugin v${rVer} (Local: v${lVer}). ${deployBtn}`);
+					showConnectionAlert('warning', `<strong>⚠️ Conexión establecida y guardada (con discrepancia de versión):</strong> ${siteName}${wpVer} tiene Plugin v${rVer} (Local: v${lVer}). ${deployBtn}`);
 				} else {
-					showConnectionAlert('success', `<strong>✓ Conexión y Auto-Emparejamiento Exitoso:</strong> Conectado con ${siteName}${wpVer}${pluginVer}. Entorno listo.`);
+					showConnectionAlert('success', `<strong>✓ Conexión establecida y ajustes guardados:</strong> Conectado con ${siteName}${wpVer}${pluginVer}. Entorno listo para sincronizar.`);
 				}
 			} catch (err) {
 				isConnectionVerified = false;
@@ -1292,6 +1296,35 @@
 		}
 
 		try {
+			// Pre-flight auto-save: ensure current UI inputs are saved to database
+			try {
+				await $.ajax({
+					url: vk7kSyncData.ajaxUrl,
+					type: 'POST',
+					data: {
+						action: 'vk7k_sync_save_settings',
+						nonce: vk7kSyncData.nonce,
+						role: $('#vk7k-role-select').val(),
+						remote_url: remoteUrl,
+						remote_secret_key: remoteKey,
+						remote_ip: remoteIp,
+						use_ssh: useSsh ? 1 : 0,
+						ssh_host: sshHost,
+						ssh_port: sshPort,
+						ssh_user: sshUser,
+						ssh_pass: sshPass,
+						ssh_path: sshPath,
+						sync_db: syncDb ? 1 : 0,
+						sync_uploads: syncUploads ? 1 : 0,
+						sync_plugins: syncPlugins ? 1 : 0,
+						sync_themes: syncThemes ? 1 : 0,
+						sync_maintenance: syncMaintenance ? 1 : 0
+					}
+				});
+			} catch (preSaveErr) {
+				console.warn('Pre-flight settings auto-save warning:', preSaveErr);
+			}
+
 			// STEP 1: Handshake
 			log('Paso 1: Verificando handshake con el servidor remoto...', 'info');
 			const testRes = await $.ajax({
@@ -1302,7 +1335,8 @@
 					nonce: vk7kSyncData.nonce,
 					remote_url: remoteUrl,
 					secret_key: remoteKey,
-					remote_ip: remoteIp
+					remote_ip: remoteIp,
+					use_ssh: useSsh ? 1 : 0
 				}
 			});
 

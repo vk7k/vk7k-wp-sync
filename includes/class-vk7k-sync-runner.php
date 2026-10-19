@@ -19,25 +19,22 @@ class VK7K_Sync_Runner {
 	public static function send_remote_request( $endpoint, $body = array(), $remote_url = '', $secret_key = '', $remote_ip = '', $stream_to_file = '', $content_type = '' ) {
 		$settings = VK7K_Sync_Auth::get_settings();
 
+		$active_target = VK7K_Sync_Auth::get_active_target();
+
 		if ( empty( $remote_url ) ) {
-			$active_target = VK7K_Sync_Auth::get_active_target();
-			if ( ! empty( $active_target['url'] ) ) {
-				$remote_url = $active_target['url'];
-				if ( empty( $secret_key ) && ! empty( $active_target['remote_secret_key'] ) ) {
-					$secret_key = $active_target['remote_secret_key'];
-				}
-				if ( empty( $remote_ip ) && ! empty( $active_target['ip'] ) ) {
-					$remote_ip = $active_target['ip'];
-				}
-			} else {
-				$remote_url = $settings['remote_url'] ?? '';
-			}
+			$target_url = ! empty( $active_target['remote_url'] ) ? $active_target['remote_url'] : ( ! empty( $active_target['url'] ) ? $active_target['url'] : '' );
+			$remote_url = ! empty( $target_url ) ? $target_url : ( $settings['remote_url'] ?? '' );
 		}
 		if ( empty( $secret_key ) ) {
-			$secret_key = ! empty( $settings['remote_secret_key'] ) ? $settings['remote_secret_key'] : ( $settings['local_secret_key'] ?? '' );
+			if ( ! empty( $active_target['remote_secret_key'] ) ) {
+				$secret_key = $active_target['remote_secret_key'];
+			} else {
+				$secret_key = ! empty( $settings['remote_secret_key'] ) ? $settings['remote_secret_key'] : ( $settings['local_secret_key'] ?? '' );
+			}
 		}
 		if ( empty( $remote_ip ) ) {
-			$remote_ip = ! empty( $settings['remote_ip'] ) ? $settings['remote_ip'] : '';
+			$target_ip = ! empty( $active_target['remote_ip'] ) ? $active_target['remote_ip'] : ( ! empty( $active_target['ip'] ) ? $active_target['ip'] : '' );
+			$remote_ip = ! empty( $target_ip ) ? $target_ip : ( $settings['remote_ip'] ?? '' );
 		}
 
 		$remote_url = untrailingslashit( $remote_url );

@@ -956,10 +956,17 @@ class VK7K_Sync_Auth {
 		}
 
 		// Check timestamp drift (5 minutes max)
-		if ( abs( time() - (int) $timestamp ) > 300 ) {
+		$drift = abs( time() - (int) $timestamp );
+		if ( $drift > 300 ) {
 			return new WP_Error(
 				'vk7k_auth_timestamp_expired',
-				__( 'La solicitud ha expirado o existe desincronización de reloj (> 5 min).', 'vk7k-wp-sync' ),
+				sprintf(
+					/* translators: 1: drift in seconds, 2: server time, 3: request timestamp */
+					__( 'Desincronización de reloj excesiva (%1$ds de diferencia, máximo permitido 300s). Hora del servidor local: %2$s, Marca de tiempo recibida: %3$s.', 'vk7k-wp-sync' ),
+					$drift,
+					gmdate( 'Y-m-d H:i:s', time() ),
+					gmdate( 'Y-m-d H:i:s', (int) $timestamp )
+				),
 				array( 'status' => 401 )
 			);
 		}

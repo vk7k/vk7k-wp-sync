@@ -152,6 +152,40 @@ class VK7K_Sync_Core {
 			) );
 		}
 
+		// When connection test succeeds, auto-persist the validated connection parameters to settings and active target
+		if ( ! empty( $remote_url ) ) {
+			$settings = VK7K_Sync_Auth::get_settings();
+			$settings['remote_url'] = $remote_url;
+			if ( ! empty( $secret_key ) ) {
+				$settings['remote_secret_key'] = $secret_key;
+			}
+			if ( isset( $_POST['remote_ip'] ) ) {
+				$settings['remote_ip'] = $remote_ip;
+			}
+			if ( isset( $_POST['use_ssh'] ) ) {
+				$settings['use_ssh'] = (int) $_POST['use_ssh'];
+			}
+			VK7K_Sync_Auth::save_settings( $settings );
+
+			$state     = VK7K_Sync_Auth::get_targets();
+			$active_id = $state['active_target_id'] ?? 'staging';
+			if ( isset( $state['targets'][ $active_id ] ) ) {
+				$state['targets'][ $active_id ]['remote_url'] = $remote_url;
+				if ( ! empty( $secret_key ) ) {
+					$state['targets'][ $active_id ]['remote_secret_key'] = VK7K_Sync_Auth::encrypt( $secret_key );
+				}
+				$state['targets'][ $active_id ]['remote_ip'] = $remote_ip;
+				if ( isset( $_POST['use_ssh'] ) ) {
+					$state['targets'][ $active_id ]['use_ssh'] = (int) $_POST['use_ssh'];
+				}
+				if ( ! empty( $res['remote_subdirs'] ) ) {
+					$state['targets'][ $active_id ]['detected_subdirs'] = $res['remote_subdirs'];
+				}
+				VK7K_Sync_Auth::save_targets_raw( $state );
+			}
+			$res['active_target'] = VK7K_Sync_Auth::get_active_target();
+		}
+
 		wp_send_json_success( $res );
 	}
 
@@ -922,9 +956,14 @@ class VK7K_Sync_Core {
 		$selection     = isset( $_POST['selection'] ) ? (array) $_POST['selection'] : array();
 		$active_target = VK7K_Sync_Auth::get_active_target();
 		$settings      = VK7K_Sync_Auth::get_settings();
-		$remote_url    = ! empty( $active_target['url'] ) ? $active_target['url'] : ( $settings['remote_url'] ?? '' );
-		$secret_key    = ! empty( $active_target['remote_secret_key'] ) ? $active_target['remote_secret_key'] : ( $settings['remote_secret_key'] ?? '' );
-		$remote_ip     = ! empty( $active_target['ip'] ) ? $active_target['ip'] : ( $settings['remote_ip'] ?? '' );
+
+		$target_url    = ! empty( $active_target['remote_url'] ) ? $active_target['remote_url'] : ( ! empty( $active_target['url'] ) ? $active_target['url'] : '' );
+		$target_secret = ! empty( $active_target['remote_secret_key'] ) ? $active_target['remote_secret_key'] : '';
+		$target_ip     = ! empty( $active_target['remote_ip'] ) ? $active_target['remote_ip'] : ( ! empty( $active_target['ip'] ) ? $active_target['ip'] : '' );
+
+		$remote_url    = ! empty( $_POST['remote_url'] ) ? esc_url_raw( wp_unslash( $_POST['remote_url'] ) ) : ( ! empty( $target_url ) ? $target_url : ( $settings['remote_url'] ?? '' ) );
+		$secret_key    = ! empty( $_POST['secret_key'] ) ? sanitize_text_field( wp_unslash( $_POST['secret_key'] ) ) : ( ! empty( $target_secret ) ? $target_secret : ( $settings['remote_secret_key'] ?? '' ) );
+		$remote_ip     = ! empty( $_POST['remote_ip'] ) ? sanitize_text_field( wp_unslash( $_POST['remote_ip'] ) ) : ( ! empty( $target_ip ) ? $target_ip : ( $settings['remote_ip'] ?? '' ) );
 
 		if ( empty( $remote_url ) || empty( $secret_key ) ) {
 			wp_send_json_error( array( 'message' => 'Configuración de conexión remota incompleta.' ) );
@@ -947,7 +986,8 @@ class VK7K_Sync_Core {
 					'granular/export',
 					$selection,
 					$remote_url,
-					$secret_key
+					$secret_key,
+					$remote_ip
 				);
 
 				if ( is_wp_error( $res ) ) {
@@ -980,7 +1020,7 @@ class VK7K_Sync_Core {
 				$users_synced   = count( $package['users'] ?? array() );
 
 				if ( ! empty( $selection['sync_media'] ) && ! empty( $package['media_files'] ) ) {
-					$res_files = VK7K_Sync_Files::pull_specific_files_from_remote( $remote_url, $secret_key, $package['media_files'] );
+					$res_files = VK7K_Sync_Files::pull_specific_files_from_remote( $remote_url, $secret_key, $package['media_files'], $remote_ip );
 					if ( ! is_wp_error( $res_files ) && ! empty( $res_files['downloaded'] ) ) {
 						$media_synced = (int) $res_files['downloaded'];
 					}
@@ -1087,7 +1127,8 @@ class VK7K_Sync_Core {
 				'granular/import',
 				array( 'package' => $package ),
 				$remote_url,
-				$secret_key
+				$secret_key,
+				$remote_ip
 			);
 
 			if ( is_wp_error( $res ) ) {
@@ -1104,7 +1145,7 @@ class VK7K_Sync_Core {
 
 			if ( ! empty( $selection['sync_media'] ) && ! empty( $package['media_files'] ) ) {
 				$rel_paths = wp_list_pluck( $package['media_files'], 'rel_path' );
-				$res_files = VK7K_Sync_Files::send_specific_files_to_remote( $remote_url, $secret_key, $rel_paths );
+				$res_files = VK7K_Sync_Files::send_specific_files_to_remote( $remote_url, $secret_key, $rel_paths, $remote_ip );
 				if ( ! is_wp_error( $res_files ) && ! empty( $res_files['uploaded'] ) ) {
 					$media_synced = (int) $res_files['uploaded'];
 				}
@@ -1208,9 +1249,11 @@ class VK7K_Sync_Core {
 		// Perform live health check and version sync verification with remote target
 		$active_target = VK7K_Sync_Auth::get_active_target();
 		$settings      = VK7K_Sync_Auth::get_settings();
-		$remote_url    = ! empty( $active_target['url'] ) ? $active_target['url'] : ( $settings['remote_url'] ?? '' );
+		$target_url    = ! empty( $active_target['remote_url'] ) ? $active_target['remote_url'] : ( ! empty( $active_target['url'] ) ? $active_target['url'] : '' );
+		$remote_url    = ! empty( $target_url ) ? $target_url : ( $settings['remote_url'] ?? '' );
 		$secret_key    = ! empty( $active_target['remote_secret_key'] ) ? $active_target['remote_secret_key'] : ( $settings['remote_secret_key'] ?? '' );
-		$remote_ip     = ! empty( $active_target['remote_ip'] ) ? $active_target['remote_ip'] : ( $settings['remote_ip'] ?? '' );
+		$target_ip     = ! empty( $active_target['remote_ip'] ) ? $active_target['remote_ip'] : ( ! empty( $active_target['ip'] ) ? $active_target['ip'] : '' );
+		$remote_ip     = ! empty( $target_ip ) ? $target_ip : ( $settings['remote_ip'] ?? '' );
 
 		$remote_status = array(
 			'configured'     => ! empty( $remote_url ),
@@ -1285,8 +1328,11 @@ class VK7K_Sync_Core {
 
 		$active_target = VK7K_Sync_Auth::get_active_target();
 		$settings      = VK7K_Sync_Auth::get_settings();
-		$remote_url    = ! empty( $active_target['url'] ) ? $active_target['url'] : ( $settings['remote_url'] ?? '' );
+		$target_url    = ! empty( $active_target['remote_url'] ) ? $active_target['remote_url'] : ( ! empty( $active_target['url'] ) ? $active_target['url'] : '' );
+		$remote_url    = ! empty( $target_url ) ? $target_url : ( $settings['remote_url'] ?? '' );
 		$secret_key    = ! empty( $active_target['remote_secret_key'] ) ? $active_target['remote_secret_key'] : ( $settings['remote_secret_key'] ?? '' );
+		$target_ip     = ! empty( $active_target['remote_ip'] ) ? $active_target['remote_ip'] : ( ! empty( $active_target['ip'] ) ? $active_target['ip'] : '' );
+		$remote_ip     = ! empty( $target_ip ) ? $target_ip : ( $settings['remote_ip'] ?? '' );
 
 		if ( empty( $remote_url ) || empty( $secret_key ) ) {
 			wp_send_json_error( array( 'message' => __( 'Servidor remoto no configurado. Revisa los ajustes de uxcribe.cl Sync.', 'vk7k-wp-sync' ) ) );
@@ -1309,7 +1355,8 @@ class VK7K_Sync_Core {
 			'granular/import',
 			array( 'package' => $package ),
 			$remote_url,
-			$secret_key
+			$secret_key,
+			$remote_ip
 		);
 
 		if ( is_wp_error( $res ) ) {
@@ -1324,7 +1371,7 @@ class VK7K_Sync_Core {
 		$media_synced = 0;
 		if ( $sync_media && ! empty( $package['media_files'] ) ) {
 			$rel_paths = wp_list_pluck( $package['media_files'], 'rel_path' );
-			$res_files = VK7K_Sync_Files::send_specific_files_to_remote( $remote_url, $secret_key, $rel_paths );
+			$res_files = VK7K_Sync_Files::send_specific_files_to_remote( $remote_url, $secret_key, $rel_paths, $remote_ip );
 			if ( ! is_wp_error( $res_files ) && ! empty( $res_files['uploaded'] ) ) {
 				$media_synced = (int) $res_files['uploaded'];
 			}
@@ -1391,8 +1438,11 @@ class VK7K_Sync_Core {
 
 		$active_target = VK7K_Sync_Auth::get_active_target();
 		$settings      = VK7K_Sync_Auth::get_settings();
-		$remote_url    = ! empty( $active_target['url'] ) ? $active_target['url'] : ( $settings['remote_url'] ?? '' );
+		$target_url    = ! empty( $active_target['remote_url'] ) ? $active_target['remote_url'] : ( ! empty( $active_target['url'] ) ? $active_target['url'] : '' );
+		$remote_url    = ! empty( $target_url ) ? $target_url : ( $settings['remote_url'] ?? '' );
 		$secret_key    = ! empty( $active_target['remote_secret_key'] ) ? $active_target['remote_secret_key'] : ( $settings['remote_secret_key'] ?? '' );
+		$target_ip     = ! empty( $active_target['remote_ip'] ) ? $active_target['remote_ip'] : ( ! empty( $active_target['ip'] ) ? $active_target['ip'] : '' );
+		$remote_ip     = ! empty( $target_ip ) ? $target_ip : ( $settings['remote_ip'] ?? '' );
 
 		if ( empty( $remote_url ) || empty( $secret_key ) ) {
 			wp_send_json_error( array( 'message' => __( 'Servidor remoto no configurado. Revisa los ajustes de uxcribe.cl Sync.', 'vk7k-wp-sync' ) ) );
@@ -1408,7 +1458,8 @@ class VK7K_Sync_Core {
 				'sync_media' => $sync_media,
 			),
 			$remote_url,
-			$secret_key
+			$secret_key,
+			$remote_ip
 		);
 
 		if ( is_wp_error( $res ) ) {
@@ -1468,7 +1519,7 @@ class VK7K_Sync_Core {
 		// 4. Pull media files from remote
 		$media_pulled = 0;
 		if ( $sync_media && ! empty( $package['media_files'] ) ) {
-			$res_files = VK7K_Sync_Files::pull_specific_files_from_remote( $remote_url, $secret_key, $package['media_files'] );
+			$res_files = VK7K_Sync_Files::pull_specific_files_from_remote( $remote_url, $secret_key, $package['media_files'], $remote_ip );
 			if ( ! is_wp_error( $res_files ) && ! empty( $res_files['downloaded'] ) ) {
 				$media_pulled = (int) $res_files['downloaded'];
 			}
