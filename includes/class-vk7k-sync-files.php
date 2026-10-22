@@ -220,7 +220,8 @@ class VK7K_Sync_Files {
 	public static function generate_manifest( $components = array( 'uploads' ), $options = array() ) {
 		$manifest = array();
 
-		$selected_plugins = isset( $options['selected_plugins'] ) ? (array) $options['selected_plugins'] : array();
+		$selected_plugins  = isset( $options['selected_plugins'] ) ? (array) $options['selected_plugins'] : array();
+		$allow_self_plugin = ! empty( $options['allow_self_plugin'] );
 		$selected_themes  = isset( $options['selected_themes'] ) ? (array) $options['selected_themes'] : array();
 		$media_filter     = isset( $options['media_filter'] ) ? sanitize_key( $options['media_filter'] ) : 'all';
 
@@ -293,7 +294,7 @@ class VK7K_Sync_Files {
 			foreach ( $dir_list as $base_path ) {
 				if ( is_file( $base_path ) ) {
 					$rel_path = self::get_relative_path( $base_path );
-					if ( ! self::is_blacklisted( $rel_path ) ) {
+					if ( ! self::is_blacklisted( $rel_path, array( 'allow_self_plugin' => $allow_self_plugin ) ) ) {
 						$manifest[ $rel_path ] = array(
 							'size'  => filesize( $base_path ),
 							'mtime' => filemtime( $base_path ),
@@ -320,7 +321,7 @@ class VK7K_Sync_Files {
 					$filepath = wp_normalize_path( $item->getPathname() );
 					$rel_path = self::get_relative_path( $filepath );
 
-					if ( self::is_blacklisted( $rel_path ) ) {
+					if ( self::is_blacklisted( $rel_path, array( 'allow_self_plugin' => $allow_self_plugin ) ) ) {
 						continue;
 					}
 
@@ -345,11 +346,16 @@ class VK7K_Sync_Files {
 	 * @param string $rel_path
 	 * @return bool
 	 */
-	public static function is_blacklisted( $rel_path ) {
+	public static function is_blacklisted( $rel_path, $context = array() ) {
 		$rel_path = wp_normalize_path( $rel_path );
 
 		$blacklists = array(
+			// The plugin's own code is excluded by default (it must never travel as part of a
+			// generic push/pull). Deploying it is an explicit, authenticated operation, so
+			// push_plugin() and the deploy handlers pass allow_self_plugin => true.
 			'vk7k-wp-sync',
+			// Build artifact: never ship it to another site.
+			'vk7k-wp-sync.zip',
 			'vk7k-sync-temp',
 			'wp-content/cache/',
 			'wp-content/upgrade/',
@@ -371,6 +377,10 @@ class VK7K_Sync_Files {
 			'.vk7k_sync_vault',
 			'preserved_admins',
 		);
+
+		if ( ! empty( $context['allow_self_plugin'] ) ) {
+			$blacklists = array_values( array_diff( $blacklists, array( 'vk7k-wp-sync' ) ) );
+		}
 
 		foreach ( $blacklists as $pattern ) {
 			if ( false !== strpos( $rel_path, $pattern ) ) {
@@ -728,7 +738,7 @@ class VK7K_Sync_Files {
 				continue;
 			}
 
-			if ( self::is_blacklisted( $filename ) ) {
+			if ( self::is_blacklisted( $filename, array( 'allow_self_plugin' => true ) ) ) {
 				continue;
 			}
 

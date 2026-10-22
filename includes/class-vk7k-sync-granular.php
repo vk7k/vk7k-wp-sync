@@ -80,14 +80,21 @@ class VK7K_Sync_Granular {
 		$users_data    = count_users();
 		$users_count   = (int) ( $users_data['total_users'] ?? 0 );
 
+		$products_count = 0;
+		if ( post_type_exists( 'product' ) ) {
+			$p_cnt          = wp_count_posts( 'product' );
+			$products_count = (int) ( $p_cnt->publish ?? 0 );
+		}
+
 		return array(
-			'post_types'    => array_values( $post_type_list ),
-			'menus'         => $menus,
-			'taxonomies'    => $taxonomies,
-			'plugins_count' => $plugins_count,
-			'themes_count'  => $themes_count,
-			'media_count'   => $media_count,
-			'users_count'   => $users_count,
+			'post_types'     => array_values( $post_type_list ),
+			'menus'          => $menus,
+			'taxonomies'     => $taxonomies,
+			'plugins_count'  => $plugins_count,
+			'themes_count'   => $themes_count,
+			'media_count'    => $media_count,
+			'users_count'    => $users_count,
+			'products_count' => $products_count,
 		);
 	}
 
@@ -173,6 +180,11 @@ class VK7K_Sync_Granular {
 			$title = ! empty( $row['post_title'] ) ? $row['post_title'] : '(sin título - #' . $row['ID'] . ')';
 			if ( 'attachment' === $row['post_type'] && ! empty( $row['post_mime_type'] ) ) {
 				$title .= ' (' . $row['post_mime_type'] . ')';
+			} elseif ( 'product' === $row['post_type'] ) {
+				$sku = get_post_meta( $row['ID'], '_sku', true );
+				if ( ! empty( $sku ) ) {
+					$title .= ' [' . $sku . ']';
+				}
 			}
 
 			$items[] = array(
@@ -460,6 +472,10 @@ class VK7K_Sync_Granular {
 		global $wpdb;
 
 		$selected_post_ids = ! empty( $selection['posts'] ) && is_array( $selection['posts'] ) ? array_map( 'intval', $selection['posts'] ) : array();
+		$selected_prod_ids = ! empty( $selection['products'] ) && is_array( $selection['products'] ) ? array_map( 'intval', $selection['products'] ) : array();
+		if ( ! empty( $selected_prod_ids ) ) {
+			$selected_post_ids = array_merge( $selected_post_ids, $selected_prod_ids );
+		}
 		$selected_media_ids= ! empty( $selection['media'] ) && is_array( $selection['media'] ) ? array_map( 'intval', $selection['media'] ) : array();
 		$selected_menus    = ! empty( $selection['menus'] ) && is_array( $selection['menus'] ) ? array_map( 'intval', $selection['menus'] ) : array();
 		$selected_options  = ! empty( $selection['options'] ) && is_array( $selection['options'] ) ? array_map( 'sanitize_text_field', $selection['options'] ) : array();
@@ -482,6 +498,24 @@ class VK7K_Sync_Granular {
 			}
 		}
 
+		// 0.1 Expand post_types if present (e.g. from preset recipes like 'Solo Productos y Medios')
+		if ( ! empty( $selection['post_types'] ) && is_array( $selection['post_types'] ) ) {
+			$escaped_pts = "'" . implode( "', '", array_map( 'esc_sql', $selection['post_types'] ) ) . "'";
+			$pt_ids = $wpdb->get_col( "SELECT ID FROM `{$wpdb->posts}` WHERE post_type IN ({$escaped_pts}) AND post_status NOT IN ('trash', 'auto-draft')" );
+			if ( ! empty( $pt_ids ) ) {
+				$selected_post_ids = array_merge( $selected_post_ids, array_map( 'intval', $pt_ids ) );
+			}
+		}
+
+		// 0.2 Expand taxonomies if present (e.g. from preset recipes)
+		if ( ! empty( $selection['taxonomies'] ) && is_array( $selection['taxonomies'] ) ) {
+			$escaped_taxes = "'" . implode( "', '", array_map( 'esc_sql', $selection['taxonomies'] ) ) . "'";
+			$tax_term_ids = $wpdb->get_col( "SELECT term_id FROM `{$wpdb->term_taxonomy}` WHERE taxonomy IN ({$escaped_taxes})" );
+			if ( ! empty( $tax_term_ids ) ) {
+				$selected_terms = array_merge( $selected_terms, array_map( 'intval', $tax_term_ids ) );
+			}
+		}
+
 		// 1. Expand Menu items
 		$menu_term_ids = array();
 		if ( ! empty( $selected_menus ) ) {
@@ -492,6 +526,17 @@ class VK7K_Sync_Granular {
 					foreach ( $items as $it ) {
 						$selected_post_ids[] = (int) $it->ID;
 					}
+				}
+			}
+		}
+
+		// 1.1 Expand WooCommerce product variations (product_variation child posts)
+		if ( ! empty( $selected_post_ids ) ) {
+			$p_ids_in = implode( ',', array_map( 'intval', $selected_post_ids ) );
+			$variation_ids = $wpdb->get_col( "SELECT ID FROM `{$wpdb->posts}` WHERE post_type = 'product_variation' AND post_parent IN ({$p_ids_in})" );
+			if ( ! empty( $variation_ids ) ) {
+				foreach ( $variation_ids as $var_id ) {
+					$selected_post_ids[] = (int) $var_id;
 				}
 			}
 		}
@@ -520,8 +565,8 @@ class VK7K_Sync_Granular {
 				$media_post_ids[] = (int) $paid;
 			}
 
-			// C) WooCommerce gallery images (_product_image_gallery)
-			$galleries = $wpdb->get_col( "SELECT meta_value FROM `{$wpdb->postmeta}` WHERE meta_key = '_product_image_gallery' AND post_id IN ({$ids_in})" );
+			// C) WooCommerce gallery images (_product_image_gallery) and variation galleries
+			$galleries = $wpdb->get_col( "SELECT meta_value FROM `{$wpdb->postmeta}` WHERE meta_key IN ('_product_image_gallery', '_wc_additional_variation_images', 'variation_image_gallery') AND post_id IN ({$ids_in})" );
 			foreach ( $galleries as $gal ) {
 				if ( ! empty( $gal ) ) {
 					$parts = explode( ',', $gal );
@@ -714,6 +759,73 @@ class VK7K_Sync_Granular {
 			$terms_data = array_merge( $terms_data, $menu_terms );
 		}
 
+		// 5.1 Fetch Termmeta rows
+		$termmeta_rows = array();
+		if ( ! empty( $terms_data ) ) {
+			$term_ids = array_unique( array_filter( array_map( 'intval', wp_list_pluck( $terms_data, 'term_id' ) ) ) );
+			if ( ! empty( $term_ids ) ) {
+				$t_in = implode( ',', $term_ids );
+				$termmeta_rows = $wpdb->get_results( "SELECT * FROM `{$wpdb->termmeta}` WHERE term_id IN ({$t_in})", ARRAY_A );
+
+				// Discover category thumbnail images if requested
+				if ( $sync_media && ! empty( $termmeta_rows ) ) {
+					foreach ( $termmeta_rows as $tm ) {
+						if ( 'thumbnail_id' === $tm['meta_key'] && (int) $tm['meta_value'] > 0 ) {
+							$t_mid = (int) $tm['meta_value'];
+							if ( ! in_array( $t_mid, $media_post_ids, true ) ) {
+								$media_post_ids[] = $t_mid;
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// 5.2 Fetch WooCommerce Attribute Taxonomies definitions (pa_*)
+		$wc_attr_taxonomies = array();
+		$attr_tax_names     = array();
+		if ( ! empty( $terms_data ) ) {
+			foreach ( $terms_data as $td ) {
+				if ( ! empty( $td['taxonomy'] ) && 0 === strpos( $td['taxonomy'], 'pa_' ) ) {
+					$attr_tax_names[] = substr( $td['taxonomy'], 3 );
+				}
+			}
+		}
+		if ( ! empty( $postmeta_rows ) ) {
+			foreach ( $postmeta_rows as $pm ) {
+				if ( '_product_attributes' === $pm['meta_key'] && ! empty( $pm['meta_value'] ) ) {
+					$attrs = maybe_unserialize( $pm['meta_value'] );
+					if ( is_array( $attrs ) ) {
+						foreach ( array_keys( $attrs ) as $attr_key ) {
+							if ( 0 === strpos( $attr_key, 'pa_' ) ) {
+								$attr_tax_names[] = substr( $attr_key, 3 );
+							}
+						}
+					}
+				}
+			}
+		}
+		$attr_tax_names = array_unique( array_filter( $attr_tax_names ) );
+		if ( ! empty( $attr_tax_names ) ) {
+			$wc_attr_table = "{$wpdb->prefix}woocommerce_attribute_taxonomies";
+			$table_exists  = $wpdb->get_var( $wpdb->prepare( "SHOW TABLES LIKE %s", $wc_attr_table ) );
+			if ( $table_exists ) {
+				$escaped_names = implode( "','", array_map( 'esc_sql', $attr_tax_names ) );
+				$wc_attr_taxonomies = $wpdb->get_results( "SELECT * FROM `{$wc_attr_table}` WHERE attribute_name IN ('{$escaped_names}')", ARRAY_A );
+			}
+		}
+
+		// 5.3 Fetch WooCommerce Product Meta Lookup rows
+		$wc_lookup_rows = array();
+		if ( ! empty( $selected_post_ids ) ) {
+			$lookup_table = "{$wpdb->prefix}wc_product_meta_lookup";
+			$has_lookup   = $wpdb->get_var( $wpdb->prepare( "SHOW TABLES LIKE %s", $lookup_table ) );
+			if ( $has_lookup ) {
+				$p_in = implode( ',', array_map( 'intval', $selected_post_ids ) );
+				$wc_lookup_rows = $wpdb->get_results( "SELECT * FROM `{$lookup_table}` WHERE product_id IN ({$p_in})", ARRAY_A );
+			}
+		}
+
 		// 6. Fetch Options rows
 		$options_rows = array();
 		if ( ! empty( $selected_options ) ) {
@@ -763,10 +875,13 @@ class VK7K_Sync_Granular {
 			'terms'              => $terms_data,
 			'options'            => $options_rows,
 			'media_files'        => $media_files,
-			'plugins'            => $selected_plugins,
-			'themes'             => $selected_themes,
-			'users'              => $users_rows,
-			'usermeta'           => $usermeta_rows,
+			'plugins'                 => $selected_plugins,
+			'themes'                  => $selected_themes,
+			'users'                   => $users_rows,
+			'usermeta'                => $usermeta_rows,
+			'termmeta'                => $termmeta_rows,
+			'wc_attribute_taxonomies' => $wc_attr_taxonomies,
+			'wc_product_meta_lookup'  => $wc_lookup_rows,
 		);
 	}
 
@@ -807,17 +922,44 @@ class VK7K_Sync_Granular {
 
 		$media_count = ! empty( $pkg['media_files'] ) ? count( $pkg['media_files'] ) : 0;
 
+		$is_product       = ( 'product' === $post->post_type );
+		$product_type     = 'simple';
+		$sku              = '';
+		$variations_count = 0;
+		$gallery_count    = 0;
+
+		if ( $is_product ) {
+			$sku = (string) get_post_meta( $post->ID, '_sku', true );
+			$terms = wp_get_post_terms( $post->ID, 'product_type' );
+			if ( ! empty( $terms ) && ! is_wp_error( $terms ) ) {
+				$product_type = $terms[0]->name;
+			}
+			$variations_count = (int) $wpdb->get_var( $wpdb->prepare(
+				"SELECT COUNT(ID) FROM `{$wpdb->posts}` WHERE post_type = 'product_variation' AND post_parent = %d",
+				$post->ID
+			) );
+			$gal_meta = get_post_meta( $post->ID, '_product_image_gallery', true );
+			if ( ! empty( $gal_meta ) ) {
+				$gallery_count = count( array_filter( explode( ',', $gal_meta ) ) );
+			}
+		}
+
 		return array(
-			'id'          => (int) $post->ID,
-			'title'       => ! empty( $post->post_title ) ? $post->post_title : '(sin título - #' . $post->ID . ')',
-			'slug'        => $post->post_name,
-			'type'        => $post->post_type,
-			'status'      => $post->post_status,
-			'modified'    => $post->post_modified,
-			'thumb_url'   => $thumb_url ?: '',
-			'media_count' => $media_count,
-			'meta_count'  => $meta_count,
-			'terms_count' => $terms_count,
+			'id'               => (int) $post->ID,
+			'title'            => ! empty( $post->post_title ) ? $post->post_title : '(sin título - #' . $post->ID . ')',
+			'slug'             => $post->post_name,
+			'type'             => $post->post_type,
+			'status'           => $post->post_status,
+			'modified'         => $post->post_modified,
+			'thumb_url'        => $thumb_url ?: '',
+			'media_count'      => $media_count,
+			'meta_count'       => $meta_count,
+			'terms_count'      => $terms_count,
+			'is_product'       => $is_product,
+			'product_type'     => $product_type,
+			'sku'              => $sku,
+			'variations_count' => $variations_count,
+			'gallery_count'    => $gallery_count,
 		);
 	}
 

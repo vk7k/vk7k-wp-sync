@@ -124,6 +124,24 @@
 	}
 
 	/**
+	 * Compare two plugin version strings (numeric, dot separated).
+	 * Returns 1 if a > b, -1 if a < b, 0 if equal.
+	 */
+	function cmpVersions( a, b ) {
+		const pa = String( a || '0' ).split( '.' );
+		const pb = String( b || '0' ).split( '.' );
+		const len = Math.max( pa.length, pb.length );
+
+		for ( let i = 0; i < len; i++ ) {
+			const x = parseInt( pa[ i ], 10 ) || 0;
+			const y = parseInt( pb[ i ], 10 ) || 0;
+			if ( x > y ) return 1;
+			if ( x < y ) return -1;
+		}
+		return 0;
+	}
+
+	/**
 	 * Main Sync Panel UI Component (rendered inside Sidebar and/or Modal).
 	 */
 	function SyncPanelContent( props ) {
@@ -132,46 +150,156 @@
 
 		const [ postInfo, setPostInfo ]       = useState( getCurrentPostInfo() );
 		const [ isSyncing, setIsSyncing ]     = useState( false );
-		const [ syncStep, setSyncStep ]       = useState( '' );
-		const [ statusMessage, setStatus ]    = useState( null );
-		const [ syncMedia, setSyncMedia ]     = useState( true );
-		const [ reloadReq, setReloadReq ]     = useState( false );
+		const [ syncStep, setSyncStep ]           = useState( '' );
+		const [ statusMessage, setStatus ]        = useState( null );
+		const [ syncMedia, setSyncMedia ]         = useState( true );
+		const [ preserveStock, setPreserveStock ] = useState( true );
+		const [ reloadReq, setReloadReq ]         = useState( false );
 		const [ inspectData, setInspectData ] = useState( null );
 		const [ inspecting, setInspecting ]   = useState( false );
+		const [ isUpdatingPlugin, setIsUpdatingPlugin ] = useState( false );
 
-		// Inspect dependencies on load
-		useEffect( function() {
+		/**
+		 * Inspect content dependencies + live remote status.
+		 * Always returns a Promise resolving to the remote_status object (or null).
+		 */
+		function inspectRemote() {
 			const info = getCurrentPostInfo();
 			setPostInfo( info );
 
-			if ( ( info.id > 0 || info.slug ) && config.ajaxUrl && config.nonce ) {
-				setInspecting( true );
-				const fd = new FormData();
-				fd.append( 'action', 'vk7k_sync_editor_inspect' );
-				fd.append( 'nonce', config.nonce );
-				fd.append( 'post_id', info.id );
-				fd.append( 'post_name', info.slug );
-				fd.append( 'post_type', info.type );
-
-				fetch( config.ajaxUrl, { method: 'POST', body: fd } )
-					.then( ( res ) => res.json() )
-					.then( ( data ) => {
-						if ( data.success && data.data ) {
-							setInspectData( data.data );
-							if ( data.data.id && data.data.id > 0 ) {
-								setPostInfo( ( prev ) => ( {
-									...prev,
-									id: data.data.id,
-									title: data.data.title || prev.title,
-									slug: data.data.slug || prev.slug,
-								} ) );
-							}
-						}
-					} )
-					.catch( () => {} )
-					.finally( () => setInspecting( false ) );
+			if ( ! ( ( info.id > 0 || info.slug ) && config.ajaxUrl && config.nonce ) ) {
+				return Promise.resolve( null );
 			}
+
+			setInspecting( true );
+			const fd = new FormData();
+			fd.append( 'action', 'vk7k_sync_editor_inspect' );
+			fd.append( 'nonce', config.nonce );
+			fd.append( 'post_id', info.id );
+			fd.append( 'post_name', info.slug );
+			fd.append( 'post_type', info.type );
+
+			return fetch( config.ajaxUrl, { method: 'POST', body: fd } )
+				.then( ( res ) => res.json() )
+				.then( ( data ) => {
+					if ( data.success && data.data ) {
+						setInspectData( data.data );
+						if ( data.data.id && data.data.id > 0 ) {
+							setPostInfo( ( prev ) => ( {
+								...prev,
+								id: data.data.id,
+								title: data.data.title || prev.title,
+								slug: data.data.slug || prev.slug,
+							} ) );
+						}
+						return data.data.remote_status || null;
+					}
+					return null;
+				} )
+				.catch( () => null )
+				.finally( () => setInspecting( false ) );
+		}
+
+		// Kept for backwards compatibility with the rest of the handlers.
+		function runInspect() {
+			return inspectRemote();
+		}
+
+		// Inspect dependencies on load
+		useEffect( function() {
+			inspectRemote();
 		}, [] );
+
+		/**
+		 * Poll the remote status until the reported plugin version matches the local one.
+		 * Needed because a freshly deployed plugin can take a moment to be served
+		 * by the remote PHP workers (opcache / opcode cache).
+		 */
+		function verifyRemoteVersion( attempts, delayMs ) {
+			return new Promise( function( resolve ) {
+				let left = attempts;
+
+				function tick() {
+					inspectRemote().then( function( rs ) {
+						if ( rs && rs.connected && rs.version_match ) {
+							resolve( true );
+							return;
+						}
+						left--;
+						if ( left <= 0 ) {
+							resolve( false );
+							return;
+						}
+						window.setTimeout( tick, delayMs );
+					} );
+				}
+
+				tick();
+			} );
+		}
+
+		// Update remote plugin handler
+		async function handleUpdateRemotePlugin() {
+			if ( isUpdatingPlugin ) return;
+			setIsUpdatingPlugin( true );
+			setStatus( { type: 'info', text: 'Enviando y actualizando plugin vk7k-wp-sync en el servidor remoto...' } );
+
+			try {
+				const fd = new FormData();
+				fd.append( 'action', 'vk7k_sync_update_remote_plugin' );
+				fd.append( 'nonce', config.nonce );
+
+				const res  = await fetch( config.ajaxUrl, { method: 'POST', body: fd } );
+				const text = await res.text();
+				let data;
+				try {
+					data = JSON.parse( text );
+				} catch ( e ) {
+					throw new Error( 'Respuesta inválida del servidor: ' + text.substring( 0, 100 ) );
+				}
+
+				if ( ! data.success ) {
+					throw new Error( data.data && data.data.message ? data.data.message : 'Error al actualizar plugin en remoto.' );
+				}
+
+				// Apply the status the server already verified, so the panel is never left stale.
+				const serverStatus = data.data && data.data.remote_status ? data.data.remote_status : null;
+				if ( serverStatus ) {
+					setInspectData( ( prev ) => Object.assign( {}, prev || {}, { remote_status: serverStatus } ) );
+				}
+
+				let matched = Boolean( serverStatus && serverStatus.connected && serverStatus.version_match );
+
+				// Verify against the remote itself (retries cover a brief opcache lag).
+				if ( ! matched ) {
+					setStatus( { type: 'info', text: 'Plugin enviado. Verificando la versión activa en el servidor remoto...' } );
+					matched = await verifyRemoteVersion( 5, 1200 );
+				}
+
+				if ( matched ) {
+					setStatus( {
+						type: 'success',
+						text: data.data.message || 'Plugin actualizado en remoto con éxito.',
+					} );
+				} else {
+					const current = inspectData && inspectData.remote_status ? inspectData.remote_status : serverStatus;
+					const remoteV = current && current.remote_version ? 'v' + current.remote_version : 'una versión distinta';
+					setStatus( {
+						type: 'warning',
+						text: 'Los archivos del plugin se enviaron, pero el servidor remoto todavía reporta ' + remoteV +
+							' en lugar de v' + ( config.localVersion || '' ) + '. Puede ser la caché de PHP del servidor: ' +
+							'vuelve a intentarlo en unos segundos o recarga el panel.',
+					} );
+				}
+			} catch ( err ) {
+				setStatus( {
+					type: 'error',
+					text: err.message || 'Error de conexión al actualizar plugin en remoto.',
+				} );
+			} finally {
+				setIsUpdatingPlugin( false );
+			}
+		}
 
 		// PUSH Action handler
 		async function handlePush() {
@@ -210,6 +338,7 @@
 				fd.append( 'post_type', current.type );
 				fd.append( 'post_name', current.slug );
 				fd.append( 'sync_media', syncMedia ? '1' : '0' );
+				fd.append( 'preserve_stock', preserveStock ? '1' : '0' );
 
 				setSyncStep( 'Enviando contenido y archivos de medios al servidor remoto...' );
 
@@ -272,6 +401,7 @@
 				fd.append( 'post_type', current.type );
 				fd.append( 'post_name', current.slug );
 				fd.append( 'sync_media', syncMedia ? '1' : '0' );
+				fd.append( 'preserve_stock', preserveStock ? '1' : '0' );
 
 				setSyncStep( 'Descargando e importando contenido, metadatos y medios...' );
 
@@ -309,7 +439,19 @@
 		const isConfigured = Boolean( config.isConfigured );
 		const remoteHost   = config.remoteUrl ? config.remoteUrl.replace( /^https?:\/\//, '' ).replace( /\/$/, '' ) : '';
 		const remoteStatus = inspectData && inspectData.remote_status ? inspectData.remote_status : null;
-		const isBlocked    = isSyncing || ! isConfigured || inspecting || Boolean( remoteStatus && remoteStatus.needs_action );
+
+		const localVersion      = config.localVersion || ( remoteStatus && remoteStatus.local_version ) || '';
+		const isVersionMismatch = Boolean( remoteStatus && remoteStatus.connected && ! remoteStatus.version_match );
+		const isDisconnected    = Boolean( remoteStatus && ! remoteStatus.connected );
+		// True when the REMOTE runs a newer version: the fix belongs to the local install, not to a remote deploy.
+		const remoteIsNewer     = Boolean( isVersionMismatch && cmpVersions( remoteStatus.remote_version, localVersion ) > 0 );
+		const isBusy            = isSyncing || inspecting || isUpdatingPlugin;
+
+		// A version mismatch blocks Push (never write with mismatched code) but keeps Pull available,
+		// because pulling does not modify the remote. A lost connection blocks both.
+		const isPushBlocked     = isBusy || ! isConfigured || isVersionMismatch || isDisconnected;
+		const isPullBlocked     = isBusy || ! isConfigured || isDisconnected;
+		const areOptionsBlocked = isBusy || ! isConfigured;
 
 		// Determine dynamic badge status
 		let badgeClass = 'is-offline';
@@ -331,6 +473,106 @@
 		} else if ( isConfigured ) {
 			badgeClass = 'is-online';
 			badgeText  = 'Conectado';
+		}
+
+		/**
+		 * Unified remote status card (connection, configuration and version state).
+		 * The old layout rendered BOTH a "Plugins Desincronizados" box with a
+		 * configuration link and a separate version box, which is now a single card
+		 * that offers the remote plugin update directly.
+		 */
+		function remoteAlertCard() {
+			const settingsLink = function( label ) {
+				return el(
+					'a',
+					{
+						key: 'settings',
+						href: config.settingsUrl || 'admin.php?page=uxcribe-sync',
+						target: '_blank',
+						rel: 'noopener noreferrer',
+						className: 'vk7k-sync-btn-settings-link',
+					},
+					el( 'span', {}, label ),
+					el( 'span', { style: { fontSize: '13px' } }, '↗' )
+				);
+			};
+
+			const retryButton = el(
+				Button,
+				{
+					key: 'retry',
+					variant: 'secondary',
+					isSmall: true,
+					className: 'vk7k-sync-btn-retry',
+					disabled: isBusy,
+					onClick: function() {
+						inspectRemote();
+					},
+				},
+				'🔄 Volver a comprobar'
+			);
+
+			const updateButton = el(
+				Button,
+				{
+					key: 'update',
+					variant: 'secondary',
+					isSmall: true,
+					className: 'vk7k-sync-btn-deploy',
+					disabled: isUpdatingPlugin,
+					onClick: handleUpdateRemotePlugin,
+				},
+				isUpdatingPlugin ? el( Spinner, {} ) : el( 'span', { style: { marginRight: '4px' } }, '⚡' ),
+				isUpdatingPlugin ? ' Actualizando en remoto...' : ' Actualizar plugin en remoto'
+			);
+
+			let tone    = 'warn';
+			let title   = '';
+			let message = '';
+			let actions = [];
+
+			if ( ! isConfigured ) {
+				title   = 'Servidor Remoto no Configurado';
+				message = i18n.notConfigured || 'Debes vincular un entorno remoto en los ajustes de uxcribe.cl Sync para habilitar Push y Pull.';
+				actions = [ settingsLink( '⚙️ Configurar Entorno Remoto' ) ];
+			} else if ( ! remoteStatus || inspecting ) {
+				return null;
+			} else if ( ! remoteStatus.connected ) {
+				tone    = 'danger';
+				title   = 'Sin Conexión con el Servidor Remoto';
+				message = remoteStatus.error || 'No se pudo autenticar con el servidor remoto.';
+				actions = [ retryButton, settingsLink( '⚙️ Revisar Ajustes' ) ];
+			} else if ( isVersionMismatch ) {
+				title   = 'Plugin Desincronizado (remoto v' + ( remoteStatus.remote_version || '?' ) + ' · local v' + ( localVersion || '?' ) + ')';
+				message = remoteStatus.error || 'La versión del plugin en el servidor remoto no coincide con la versión local.';
+				const canDeploy = config.canUpdatePlugin !== false;
+				if ( remoteIsNewer ) {
+					// Nothing to deploy: the LOCAL copy is the one that must be updated.
+					actions = [ retryButton ];
+				} else if ( ! canDeploy ) {
+					message += ' Pide a un administrador que actualice el plugin en el servidor remoto.';
+					actions = [ retryButton ];
+				} else if ( statusMessage && statusMessage.type === 'warning' ) {
+					actions = [ updateButton, retryButton ];
+				} else {
+					actions = [ updateButton ];
+				}
+			} else {
+				return null;
+			}
+
+			return el(
+				'div',
+				{ className: 'vk7k-sync-remote-alert is-' + tone },
+				el(
+					'div',
+					{ className: 'vk7k-sync-remote-alert-head' },
+					el( 'span', {}, tone === 'danger' ? '⛔' : '⚠️' ),
+					el( 'strong', {}, title )
+				),
+				el( 'p', { className: 'vk7k-sync-remote-alert-msg' }, message ),
+				actions.length ? el( 'div', { className: 'vk7k-sync-alert-actions' }, actions ) : null
+			);
 		}
 
 		return el(
@@ -415,7 +657,7 @@
 				)
 			),
 
-			// Media Option Checkbox
+			// Media & Stock Option Checkboxes
 			el(
 				'div',
 				{ className: 'vk7k-sync-options' },
@@ -423,75 +665,17 @@
 					label: i18n.syncMedia || 'Sincronizar medios y adjuntos (imágenes, galerías)',
 					checked: syncMedia,
 					onChange: setSyncMedia,
-					disabled: isBlocked,
+					disabled: areOptionsBlocked,
+				} ),
+				postInfo && postInfo.type === 'product' && el( CheckboxControl, {
+					label: 'Proteger inventario remoto (no sobrescribir stock en vivo)',
+					checked: preserveStock,
+					onChange: setPreserveStock,
+					disabled: areOptionsBlocked,
 				} )
 			),
 
-			// Remote Alert / Version Mismatch / Connection Issue Card
-			remoteStatus && remoteStatus.needs_action
-				? el(
-					'div',
-					{ className: 'vk7k-sync-remote-alert' },
-					el(
-						'div',
-						{ className: 'vk7k-sync-remote-alert-head' },
-						el( 'span', {}, '⚠️' ),
-						el(
-							'strong',
-							{},
-							! remoteStatus.connected
-								? 'Problema de Conexión Remota'
-								: 'Plugins Desincronizados'
-						)
-					),
-					el(
-						'p',
-						{ className: 'vk7k-sync-remote-alert-msg' },
-						remoteStatus.error
-					),
-					el(
-						'a',
-						{
-							href: config.settingsUrl || 'admin.php?page=uxcribe-sync',
-							target: '_blank',
-							rel: 'noopener noreferrer',
-							className: 'vk7k-sync-btn-settings-link',
-						},
-						el( 'span', {}, '⚙️ Ir a Configuración del Plugin' ),
-						el( 'span', { style: { fontSize: '13px' } }, '↗' )
-					)
-				)
-				: null,
-
-			// Unconfigured Warning with Settings Button
-			! isConfigured
-				? el(
-					'div',
-					{ className: 'vk7k-sync-remote-alert' },
-					el(
-						'div',
-						{ className: 'vk7k-sync-remote-alert-head' },
-						el( 'span', {}, '⚠️' ),
-						el( 'strong', {}, 'Servidor Remoto no Configurado' )
-					),
-					el(
-						'p',
-						{ className: 'vk7k-sync-remote-alert-msg' },
-						i18n.notConfigured || 'Debes vincular un entorno remoto en los ajustes de uxcribe.cl Sync para habilitar Push y Pull.'
-					),
-					el(
-						'a',
-						{
-							href: config.settingsUrl || 'admin.php?page=uxcribe-sync',
-							target: '_blank',
-							rel: 'noopener noreferrer',
-							className: 'vk7k-sync-btn-settings-link',
-						},
-						el( 'span', {}, '⚙️ Configurar Entorno Remoto' ),
-						el( 'span', { style: { fontSize: '13px' } }, '↗' )
-					)
-				)
-				: null,
+			remoteAlertCard(),
 
 			// Push & Pull Action Buttons
 			el(
@@ -502,8 +686,8 @@
 					{
 						className: 'vk7k-sync-btn-push',
 						onClick: handlePush,
-						disabled: isBlocked,
-						title: ( remoteStatus && remoteStatus.needs_action ) ? remoteStatus.error : '',
+						disabled: isPushBlocked,
+						title: isVersionMismatch ? ( remoteStatus.error || 'Push bloqueado: actualiza el plugin en remoto primero.' ) : '',
 					},
 					el( 'span', { style: { fontSize: '15px' } }, '⬆️' ),
 					isSyncing && syncStep.indexOf( 'Enviando' ) !== -1
@@ -515,8 +699,8 @@
 					{
 						className: 'vk7k-sync-btn-pull',
 						onClick: handlePull,
-						disabled: isBlocked,
-						title: ( remoteStatus && remoteStatus.needs_action ) ? remoteStatus.error : '',
+						disabled: isPullBlocked,
+						title: isDisconnected ? ( remoteStatus.error || 'Servidor remoto desconectado.' ) : '',
 					},
 					el( 'span', { style: { fontSize: '15px' } }, '⬇️' ),
 					isSyncing && syncStep.indexOf( 'Descargando' ) !== -1

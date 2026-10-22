@@ -94,6 +94,7 @@ class VK7K_Sync_Core {
 		add_action( 'wp_ajax_vk7k_sync_editor_inspect', array( $this, 'ajax_editor_inspect' ) );
 		add_action( 'wp_ajax_vk7k_sync_editor_push', array( $this, 'ajax_editor_push' ) );
 		add_action( 'wp_ajax_vk7k_sync_editor_pull', array( $this, 'ajax_editor_pull' ) );
+		add_action( 'wp_ajax_vk7k_sync_update_remote_plugin', array( $this, 'ajax_update_remote_plugin' ) );
 	}
 
 	/**
@@ -843,9 +844,30 @@ class VK7K_Sync_Core {
 			}
 		}
 
+		// Verify the remote is really running this version (same rule as the editor update button).
+		if ( function_exists( 'set_time_limit' ) ) {
+			@set_time_limit( 180 );
+		}
+
+		$verify        = self::verify_remote_plugin_version( 3, 1 );
+		$remote_status = self::build_remote_status();
+
+		if ( ! empty( $verify['verified'] ) ) {
+			wp_send_json_success( array(
+				'message'        => 'Plugin desplegado y verificado en el servidor remoto (v' . VK7K_SYNC_VERSION . ').',
+				'plugin_version' => VK7K_SYNC_VERSION,
+				'verified'       => true,
+				'remote_status'  => $remote_status,
+			) );
+		}
+
+		$reported = ! empty( $verify['remote_version'] ) ? $verify['remote_version'] : 'desconocida';
 		wp_send_json_success( array(
-			'message'        => 'Plugin desplegado y actualizado con éxito en el servidor remoto a la versión ' . VK7K_SYNC_VERSION,
+			'message'        => 'Archivos del plugin enviados, pero el servidor remoto aún reporta v' . $reported . ' (local v' . VK7K_SYNC_VERSION . '). Suele ser la caché de PHP del servidor: vuelve a comprobar en unos segundos.',
 			'plugin_version' => VK7K_SYNC_VERSION,
+			'verified'       => false,
+			'warning'        => true,
+			'remote_status'  => $remote_status,
 		) );
 	}
 
@@ -977,7 +999,7 @@ class VK7K_Sync_Core {
 		$users_synced   = 0;
 		$errors         = array();
 
-		$has_db_entities = ! empty( $selection['posts'] ) || ! empty( $selection['media'] ) || ! empty( $selection['menus'] ) || ! empty( $selection['options'] ) || ! empty( $selection['terms'] ) || ! empty( $selection['users'] ) || ! empty( $selection['slug'] );
+		$has_db_entities = ! empty( $selection['posts'] ) || ! empty( $selection['products'] ) || ! empty( $selection['media'] ) || ! empty( $selection['menus'] ) || ! empty( $selection['options'] ) || ! empty( $selection['terms'] ) || ! empty( $selection['users'] ) || ! empty( $selection['slug'] );
 
 		if ( 'pull' === $direction ) {
 			// 1. Pull Database entities and media if selected
@@ -1123,9 +1145,21 @@ class VK7K_Sync_Core {
 		if ( $has_db_entities ) {
 			$package = VK7K_Sync_Granular::export_package( $selection );
 
+			// Send media files first so physical assets are on disk
+			if ( ! empty( $selection['sync_media'] ) && ! empty( $package['media_files'] ) ) {
+				$rel_paths = wp_list_pluck( $package['media_files'], 'rel_path' );
+				$res_files = VK7K_Sync_Files::send_specific_files_to_remote( $remote_url, $secret_key, $rel_paths, $remote_ip );
+				if ( ! is_wp_error( $res_files ) && ! empty( $res_files['uploaded'] ) ) {
+					$media_synced = (int) $res_files['uploaded'];
+				}
+			}
+
 			$res = VK7K_Sync_Client::post(
 				'granular/import',
-				array( 'package' => $package ),
+				array(
+					'package'        => $package,
+					'preserve_stock' => ! empty( $selection['preserve_stock'] ),
+				),
 				$remote_url,
 				$secret_key,
 				$remote_ip
@@ -1142,14 +1176,6 @@ class VK7K_Sync_Core {
 			$posts_synced   = $res['posts_synced'] ?? count( $package['posts'] ?? array() );
 			$options_synced = $res['options_synced'] ?? count( $package['options'] ?? array() );
 			$users_synced   = $res['users_synced'] ?? count( $package['users'] ?? array() );
-
-			if ( ! empty( $selection['sync_media'] ) && ! empty( $package['media_files'] ) ) {
-				$rel_paths = wp_list_pluck( $package['media_files'], 'rel_path' );
-				$res_files = VK7K_Sync_Files::send_specific_files_to_remote( $remote_url, $secret_key, $rel_paths, $remote_ip );
-				if ( ! is_wp_error( $res_files ) && ! empty( $res_files['uploaded'] ) ) {
-					$media_synced = (int) $res_files['uploaded'];
-				}
-			}
 		}
 
 		// 2. Push selected plugins
@@ -1217,6 +1243,149 @@ class VK7K_Sync_Core {
 	}
 
 	/**
+	 * Resolve the active remote target settings (URL / secret / IP).
+	 *
+	 * @return array{remote_url:string,secret_key:string,remote_ip:string}
+	 */
+	public static function resolve_remote_target() {
+		$active_target = VK7K_Sync_Auth::get_active_target();
+		$settings      = VK7K_Sync_Auth::get_settings();
+
+		$target_url = ! empty( $active_target['remote_url'] ) ? $active_target['remote_url'] : ( ! empty( $active_target['url'] ) ? $active_target['url'] : '' );
+		$target_ip  = ! empty( $active_target['remote_ip'] ) ? $active_target['remote_ip'] : ( ! empty( $active_target['ip'] ) ? $active_target['ip'] : '' );
+
+		return array(
+			'remote_url' => ! empty( $target_url ) ? $target_url : ( $settings['remote_url'] ?? '' ),
+			'secret_key' => ! empty( $active_target['remote_secret_key'] ) ? $active_target['remote_secret_key'] : ( $settings['remote_secret_key'] ?? '' ),
+			'remote_ip'  => ! empty( $target_ip ) ? $target_ip : ( $settings['remote_ip'] ?? '' ),
+		);
+	}
+
+	/**
+	 * Build the live remote status array (connection + plugin version state).
+	 * Shared by the editor inspector and the remote plugin updater so both
+	 * surfaces report the exact same state.
+	 *
+	 * @return array
+	 */
+	public static function build_remote_status() {
+		$target     = self::resolve_remote_target();
+		$remote_url = $target['remote_url'];
+		$secret_key = $target['secret_key'];
+		$remote_ip  = $target['remote_ip'];
+
+		$remote_status = array(
+			'configured'     => ! empty( $remote_url ),
+			'connected'      => false,
+			'remote_version' => null,
+			'local_version'  => VK7K_SYNC_VERSION,
+			'version_match'  => false,
+			'error'          => null,
+			'needs_action'   => false,
+		);
+
+		if ( empty( $remote_url ) ) {
+			$remote_status['error']        = __( 'Servidor remoto no configurado. Debes vincular un entorno en los ajustes del plugin.', 'vk7k-wp-sync' );
+			$remote_status['needs_action'] = true;
+			return $remote_status;
+		}
+
+		$test = VK7K_Sync_Client::post( 'auth/test', array(), $remote_url, $secret_key, $remote_ip );
+
+		if ( is_wp_error( $test ) ) {
+			$remote_status['error']        = sprintf( __( 'Error al conectar con el servidor remoto: %s', 'vk7k-wp-sync' ), $test->get_error_message() );
+			$remote_status['needs_action'] = true;
+			return $remote_status;
+		}
+
+		if ( empty( $test['success'] ) ) {
+			$remote_status['error']        = ! empty( $test['message'] ) ? $test['message'] : __( 'Fallo de autenticación con el servidor remoto.', 'vk7k-wp-sync' );
+			$remote_status['needs_action'] = true;
+			return $remote_status;
+		}
+
+		$remote_status['connected']           = true;
+		$remote_status['remote_version']      = $test['plugin_version'] ?? 'desconocida';
+		$remote_status['remote_version_disk'] = $test['plugin_version_disk'] ?? '';
+		$remote_status['remote_site']         = $test['site_name'] ?? $remote_url;
+		$remote_status['remote_wp']           = $test['wp_version'] ?? '';
+
+		$version_diff = version_compare( $remote_status['remote_version'], VK7K_SYNC_VERSION );
+
+		if ( 0 === $version_diff ) {
+			$remote_status['version_match'] = true;
+			return $remote_status;
+		}
+
+		$remote_status['version_match'] = false;
+		$remote_status['needs_action']  = true;
+
+		if ( $version_diff < 0 ) {
+			$remote_status['remote_is_outdated'] = true;
+			$remote_status['error']              = sprintf(
+				__( 'Versión remota desactualizada (v%s en remoto vs v%s local). El Push está bloqueado para prevenir inconsistencias en la base de datos y archivos.', 'vk7k-wp-sync' ),
+				$remote_status['remote_version'],
+				VK7K_SYNC_VERSION
+			);
+
+			// Files already updated on disk but PHP still serving the old code (opcache lag).
+			if ( ! empty( $remote_status['remote_version_disk'] ) && 0 === version_compare( $remote_status['remote_version_disk'], VK7K_SYNC_VERSION ) ) {
+				$remote_status['opcache_lag'] = true;
+				$remote_status['error']       = sprintf(
+					__( 'Los archivos del plugin en remoto ya son v%s, pero el servidor sigue ejecutando v%s (caché de PHP/opcache). El Push se desbloqueará cuando el servidor recargue el código; vuelve a comprobar en unos segundos.', 'vk7k-wp-sync' ),
+					$remote_status['remote_version_disk'],
+					$remote_status['remote_version']
+				);
+			}
+		} else {
+			$remote_status['remote_is_newer'] = true;
+			$remote_status['error']           = sprintf(
+				__( 'Versión remota más reciente que la local (v%s en remoto vs v%s local). Actualiza el plugin localmente para sincronizar sin riesgos.', 'vk7k-wp-sync' ),
+				$remote_status['remote_version'],
+				VK7K_SYNC_VERSION
+			);
+		}
+
+		return $remote_status;
+	}
+
+	/**
+	 * Verify that the remote is really running the local plugin version,
+	 * retrying a few times to absorb a brief opcache/reload lag.
+	 *
+	 * @param int $attempts Number of checks.
+	 * @param int $delay    Seconds between checks.
+	 * @return array{verified:bool,remote_version:string,remote_version_disk:string,attempts:int}
+	 */
+	public static function verify_remote_plugin_version( $attempts = 3, $delay = 1 ) {
+		$attempts = max( 1, (int) $attempts );
+		$result   = array(
+			'verified'            => false,
+			'remote_version'      => '',
+			'remote_version_disk' => '',
+			'attempts'            => 0,
+		);
+
+		for ( $i = 0; $i < $attempts; $i++ ) {
+			$status = self::build_remote_status();
+			$result['attempts']            = $i + 1;
+			$result['remote_version']      = (string) ( $status['remote_version'] ?? '' );
+			$result['remote_version_disk'] = (string) ( $status['remote_version_disk'] ?? '' );
+
+			if ( ! empty( $status['connected'] ) && ! empty( $status['version_match'] ) ) {
+				$result['verified'] = true;
+				break;
+			}
+
+			if ( $i < $attempts - 1 ) {
+				sleep( max( 1, (int) $delay ) );
+			}
+		}
+
+		return $result;
+	}
+
+	/**
 	 * AJAX: Inspect single post/page/product for Gutenberg / FSE Sync panel.
 	 */
 	public function ajax_editor_inspect() {
@@ -1246,58 +1415,95 @@ class VK7K_Sync_Core {
 			wp_send_json_error( array( 'message' => __( 'Contenido no encontrado.', 'vk7k-wp-sync' ) ) );
 		}
 
-		// Perform live health check and version sync verification with remote target
-		$active_target = VK7K_Sync_Auth::get_active_target();
-		$settings      = VK7K_Sync_Auth::get_settings();
-		$target_url    = ! empty( $active_target['remote_url'] ) ? $active_target['remote_url'] : ( ! empty( $active_target['url'] ) ? $active_target['url'] : '' );
-		$remote_url    = ! empty( $target_url ) ? $target_url : ( $settings['remote_url'] ?? '' );
-		$secret_key    = ! empty( $active_target['remote_secret_key'] ) ? $active_target['remote_secret_key'] : ( $settings['remote_secret_key'] ?? '' );
-		$target_ip     = ! empty( $active_target['remote_ip'] ) ? $active_target['remote_ip'] : ( ! empty( $active_target['ip'] ) ? $active_target['ip'] : '' );
-		$remote_ip     = ! empty( $target_ip ) ? $target_ip : ( $settings['remote_ip'] ?? '' );
-
-		$remote_status = array(
-			'configured'     => ! empty( $remote_url ),
-			'connected'      => false,
-			'remote_version' => null,
-			'local_version'  => VK7K_SYNC_VERSION,
-			'version_match'  => false,
-			'error'          => null,
-			'needs_action'   => false,
-		);
-
-		if ( empty( $remote_url ) ) {
-			$remote_status['error']        = __( 'Servidor remoto no configurado. Debes vincular un entorno en los ajustes del plugin.', 'vk7k-wp-sync' );
-			$remote_status['needs_action'] = true;
-		} else {
-			$test = VK7K_Sync_Client::post( 'auth/test', array(), $remote_url, $secret_key, $remote_ip );
-			if ( is_wp_error( $test ) ) {
-				$remote_status['error']        = sprintf( __( 'Error al conectar con el servidor remoto: %s', 'vk7k-wp-sync' ), $test->get_error_message() );
-				$remote_status['needs_action'] = true;
-			} elseif ( empty( $test['success'] ) ) {
-				$remote_status['error']        = ! empty( $test['message'] ) ? $test['message'] : __( 'Fallo de autenticación con el servidor remoto.', 'vk7k-wp-sync' );
-				$remote_status['needs_action'] = true;
-			} else {
-				$remote_status['connected']      = true;
-				$remote_status['remote_version'] = $test['plugin_version'] ?? 'desconocida';
-				$remote_status['remote_site']    = $test['site_name'] ?? $remote_url;
-
-				if ( version_compare( $remote_status['remote_version'], '1.6.0', '<' ) ) {
-					$remote_status['version_match'] = false;
-					$remote_status['error']         = sprintf(
-						__( 'Versión remota desactualizada (v%s vs v%s local). El servidor remoto no dispone de los endpoints para sincronizar este contenido. Debes desplegar o actualizar el plugin en el remoto.', 'vk7k-wp-sync' ),
-						$remote_status['remote_version'],
-						VK7K_SYNC_VERSION
-					);
-					$remote_status['needs_action']  = true;
-				} else {
-					$remote_status['version_match'] = true;
-				}
-			}
-		}
-
-		$data['remote_status'] = $remote_status;
+		// Live health check + plugin version verification with the remote target
+		$data['remote_status'] = self::build_remote_status();
 
 		wp_send_json_success( $data );
+	}
+
+	/**
+	 * AJAX: Update/deploy vk7k-wp-sync plugin to remote environment directly.
+	 */
+	public function ajax_update_remote_plugin() {
+		check_ajax_referer( 'vk7k_sync_admin_nonce', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => __( 'No autorizado. Se requieren permisos de administrador.', 'vk7k-wp-sync' ) ) );
+		}
+
+		$target     = self::resolve_remote_target();
+		$remote_url = $target['remote_url'];
+		$secret_key = $target['secret_key'];
+		$remote_ip  = $target['remote_ip'];
+
+		if ( empty( $remote_url ) || empty( $secret_key ) ) {
+			wp_send_json_error( array( 'message' => __( 'Servidor remoto no configurado. Revisa los ajustes de uxcribe.cl Sync.', 'vk7k-wp-sync' ) ) );
+		}
+
+		$plugin_slug = dirname( VK7K_SYNC_BASENAME );
+		if ( empty( $plugin_slug ) || '.' === $plugin_slug ) {
+			$plugin_slug = 'vk7k-wp-sync';
+		}
+
+		// Long deploys must not be cut by the PHP execution limit (verification retries add a few seconds).
+		if ( function_exists( 'set_time_limit' ) ) {
+			@set_time_limit( 180 );
+		}
+
+		$res = VK7K_Sync_Runner::deploy_plugin_to_remote_via_rest( $remote_url, $secret_key, $remote_ip );
+
+		if ( is_wp_error( $res ) || empty( $res['success'] ) ) {
+			// Remotes older than the /plugin/update route (or a failed bundle write):
+			// fall back to the incremental files push, which also activates the plugin.
+			$res = VK7K_Sync_Runner::push_plugin( $plugin_slug, true, $remote_url, $secret_key, $remote_ip );
+		}
+
+		if ( is_wp_error( $res ) ) {
+			wp_send_json_error( array( 'message' => $res->get_error_message() ) );
+		}
+
+		if ( empty( $res['success'] ) ) {
+			wp_send_json_error( array( 'message' => $res['message'] ?? __( 'Error al sincronizar plugin en remoto.', 'vk7k-wp-sync' ) ) );
+		}
+
+		// Never report success on the transfer alone: prove the remote is actually running the new version.
+		$verify        = self::verify_remote_plugin_version( 3, 1 );
+		$remote_status = self::build_remote_status();
+
+		if ( ! empty( $verify['verified'] ) ) {
+			wp_send_json_success( array(
+				'message'       => sprintf( __( 'Plugin %s actualizado y verificado en el servidor remoto (v%s).', 'vk7k-wp-sync' ), $plugin_slug, VK7K_SYNC_VERSION ),
+				'version'       => VK7K_SYNC_VERSION,
+				'verified'      => true,
+				'remote_status' => $remote_status,
+			) );
+		}
+
+		$remote_version = ! empty( $verify['remote_version'] ) ? $verify['remote_version'] : 'desconocida';
+		$disk_version   = ! empty( $verify['remote_version_disk'] ) ? $verify['remote_version_disk'] : '';
+
+		if ( ! empty( $disk_version ) && 0 === version_compare( $disk_version, VK7K_SYNC_VERSION ) ) {
+			$message = sprintf(
+				__( 'Archivos del plugin %s enviados (v%s en disco remoto), pero el servidor aún ejecuta v%s por la caché de PHP (opcache). Se activará al recargar los procesos del servidor.', 'vk7k-wp-sync' ),
+				$plugin_slug,
+				$disk_version,
+				$remote_version
+			);
+		} else {
+			$message = sprintf(
+				__( 'Los archivos del plugin %s se enviaron, pero el servidor remoto sigue reportando v%s en lugar de v%s. El Push no se desbloquea hasta verificar la versión.', 'vk7k-wp-sync' ),
+				$plugin_slug,
+				$remote_version,
+				VK7K_SYNC_VERSION
+			);
+		}
+
+		wp_send_json_success( array(
+			'message'       => $message,
+			'version'       => VK7K_SYNC_VERSION,
+			'verified'      => false,
+			'warning'       => true,
+			'remote_status' => $remote_status,
+		) );
 	}
 
 	/**
@@ -1309,10 +1515,11 @@ class VK7K_Sync_Core {
 			wp_send_json_error( array( 'message' => __( 'No autorizado.', 'vk7k-wp-sync' ) ) );
 		}
 
-		$post_id    = isset( $_POST['post_id'] ) ? (int) $_POST['post_id'] : 0;
-		$post_name  = isset( $_POST['post_name'] ) ? sanitize_text_field( wp_unslash( $_POST['post_name'] ) ) : '';
-		$post_type  = isset( $_POST['post_type'] ) ? sanitize_key( $_POST['post_type'] ) : 'post';
-		$sync_media = ! empty( $_POST['sync_media'] );
+		$post_id        = isset( $_POST['post_id'] ) ? (int) $_POST['post_id'] : 0;
+		$post_name      = isset( $_POST['post_name'] ) ? sanitize_text_field( wp_unslash( $_POST['post_name'] ) ) : '';
+		$post_type      = isset( $_POST['post_type'] ) ? sanitize_key( $_POST['post_type'] ) : 'post';
+		$sync_media     = ! empty( $_POST['sync_media'] );
+		$preserve_stock = ! empty( $_POST['preserve_stock'] );
 
 		if ( $post_id <= 0 && ! empty( $post_name ) ) {
 			$post_id = VK7K_Sync_Granular::resolve_post_id( $post_name, $post_type );
@@ -1328,6 +1535,12 @@ class VK7K_Sync_Core {
 
 		$active_target = VK7K_Sync_Auth::get_active_target();
 		$settings      = VK7K_Sync_Auth::get_settings();
+		$current_role  = ! empty( $settings['role'] ) ? $settings['role'] : 'master';
+
+		if ( 'slave' === $current_role && empty( $_POST['force_push'] ) ) {
+			wp_send_json_error( array( 'message' => __( 'Este entorno está en rol Esclavo (Receptor). El comando Push está bloqueado para proteger la fuente.', 'vk7k-wp-sync' ) ) );
+		}
+
 		$target_url    = ! empty( $active_target['remote_url'] ) ? $active_target['remote_url'] : ( ! empty( $active_target['url'] ) ? $active_target['url'] : '' );
 		$remote_url    = ! empty( $target_url ) ? $target_url : ( $settings['remote_url'] ?? '' );
 		$secret_key    = ! empty( $active_target['remote_secret_key'] ) ? $active_target['remote_secret_key'] : ( $settings['remote_secret_key'] ?? '' );
@@ -1338,22 +1551,55 @@ class VK7K_Sync_Core {
 			wp_send_json_error( array( 'message' => __( 'Servidor remoto no configurado. Revisa los ajustes de uxcribe.cl Sync.', 'vk7k-wp-sync' ) ) );
 		}
 
+		// Safeguard: verify version match with remote before pushing to avoid data/media corruption
+		if ( empty( $_POST['force_push'] ) ) {
+			$test = VK7K_Sync_Client::post( 'auth/test', array(), $remote_url, $secret_key, $remote_ip );
+			if ( ! is_wp_error( $test ) && ! empty( $test['success'] ) && ! empty( $test['plugin_version'] ) ) {
+				if ( 0 !== version_compare( $test['plugin_version'], VK7K_SYNC_VERSION ) ) {
+					wp_send_json_error( array(
+						'message' => sprintf(
+							__( 'Push bloqueado por discrepancia de versión: el servidor remoto tiene v%s y este entorno tiene v%s. Haz clic en "Actualizar plugin en remoto" antes de subir contenido.', 'vk7k-wp-sync' ),
+							$test['plugin_version'],
+							VK7K_SYNC_VERSION
+						),
+						'version_mismatch' => true,
+						'remote_version'   => $test['plugin_version'],
+						'local_version'    => VK7K_SYNC_VERSION,
+					) );
+				}
+			}
+		}
+
 		// 1. Export package locally with all media and dependencies
 		$package = VK7K_Sync_Granular::export_package( array(
-			'posts'      => array( $post_id ),
-			'slug'       => $post_name,
-			'post_type'  => $post_type,
-			'sync_media' => $sync_media,
+			'posts'          => array( $post_id ),
+			'slug'           => $post_name,
+			'post_type'      => $post_type,
+			'sync_media'     => $sync_media,
+			'preserve_stock' => $preserve_stock,
 		) );
 
 		if ( empty( $package['posts'] ) ) {
 			wp_send_json_error( array( 'message' => __( 'No se encontraron datos para exportar de este contenido.', 'vk7k-wp-sync' ) ) );
 		}
 
-		// 2. Send package to remote /granular/import
+		// 2. Send media files first so physical assets exist before DB records reference them
+		$media_synced = 0;
+		if ( $sync_media && ! empty( $package['media_files'] ) ) {
+			$rel_paths = wp_list_pluck( $package['media_files'], 'rel_path' );
+			$res_files = VK7K_Sync_Files::send_specific_files_to_remote( $remote_url, $secret_key, $rel_paths, $remote_ip );
+			if ( ! is_wp_error( $res_files ) && ! empty( $res_files['uploaded'] ) ) {
+				$media_synced = (int) $res_files['uploaded'];
+			}
+		}
+
+		// 3. Send package to remote /granular/import
 		$res = VK7K_Sync_Client::post(
 			'granular/import',
-			array( 'package' => $package ),
+			array(
+				'package'        => $package,
+				'preserve_stock' => $preserve_stock,
+			),
 			$remote_url,
 			$secret_key,
 			$remote_ip
@@ -1365,16 +1611,6 @@ class VK7K_Sync_Core {
 
 		if ( empty( $res['success'] ) ) {
 			wp_send_json_error( array( 'message' => $res['message'] ?? __( 'Error en el servidor remoto al importar contenido.', 'vk7k-wp-sync' ) ) );
-		}
-
-		// 3. Send media files if requested
-		$media_synced = 0;
-		if ( $sync_media && ! empty( $package['media_files'] ) ) {
-			$rel_paths = wp_list_pluck( $package['media_files'], 'rel_path' );
-			$res_files = VK7K_Sync_Files::send_specific_files_to_remote( $remote_url, $secret_key, $rel_paths, $remote_ip );
-			if ( ! is_wp_error( $res_files ) && ! empty( $res_files['uploaded'] ) ) {
-				$media_synced = (int) $res_files['uploaded'];
-			}
 		}
 
 		// Resolve remote permalink for the pushed post
@@ -1413,10 +1649,11 @@ class VK7K_Sync_Core {
 			wp_send_json_error( array( 'message' => __( 'No autorizado.', 'vk7k-wp-sync' ) ) );
 		}
 
-		$post_id    = isset( $_POST['post_id'] ) ? (int) $_POST['post_id'] : 0;
-		$post_type  = isset( $_POST['post_type'] ) ? sanitize_key( $_POST['post_type'] ) : '';
-		$post_name  = isset( $_POST['post_name'] ) ? sanitize_title( $_POST['post_name'] ) : '';
-		$sync_media = ! empty( $_POST['sync_media'] );
+		$post_id        = isset( $_POST['post_id'] ) ? (int) $_POST['post_id'] : 0;
+		$post_type      = isset( $_POST['post_type'] ) ? sanitize_key( $_POST['post_type'] ) : '';
+		$post_name      = isset( $_POST['post_name'] ) ? sanitize_title( $_POST['post_name'] ) : '';
+		$sync_media     = ! empty( $_POST['sync_media'] );
+		$preserve_stock = ! empty( $_POST['preserve_stock'] );
 
 		if ( $post_id <= 0 && ! empty( $post_name ) ) {
 			$post_id = VK7K_Sync_Granular::resolve_post_id( $post_name, $post_type );
@@ -1498,17 +1735,34 @@ class VK7K_Sync_Core {
 					}
 					unset( $tr );
 				}
+				// Also remap post_parent of child variations or attachments that pointed to remote parent
+				foreach ( $package['posts'] as &$p_row ) {
+					if ( (int) ( $p_row['post_parent'] ?? 0 ) === $remote_primary_id ) {
+						$p_row['post_parent'] = $post_id;
+					}
+				}
+				unset( $p_row );
 			}
 		}
 
-		// 3. Import package locally with URL replacement
+		// 3. Pull media files from remote BEFORE importing DB rows
+		$media_pulled = 0;
+		if ( $sync_media && ! empty( $package['media_files'] ) ) {
+			$res_files = VK7K_Sync_Files::pull_specific_files_from_remote( $remote_url, $secret_key, $package['media_files'], $remote_ip );
+			if ( ! is_wp_error( $res_files ) && ! empty( $res_files['downloaded'] ) ) {
+				$media_pulled = (int) $res_files['downloaded'];
+			}
+		}
+
+		// 4. Import package locally with URL replacement
 		$sub_request = new WP_REST_Request( 'POST', '/' . VK7K_Sync_API::REST_NAMESPACE . '/granular/import' );
 		$sub_request->set_header( 'content-type', 'application/json' );
 		$sub_request->set_body( wp_json_encode( array(
-			'package' => array_merge( $package, array(
+			'package'        => array_merge( $package, array(
 				'source_url' => $package['source_url'] ?? $remote_url,
 				'target_url' => home_url(),
 			) ),
+			'preserve_stock' => $preserve_stock,
 		) ) );
 
 		$res_import = VK7K_Sync_API::handle_granular_import( $sub_request );
@@ -1516,13 +1770,18 @@ class VK7K_Sync_Core {
 			wp_send_json_error( array( 'message' => $res_import->get_error_message() ) );
 		}
 
-		// 4. Pull media files from remote
-		$media_pulled = 0;
-		if ( $sync_media && ! empty( $package['media_files'] ) ) {
-			$res_files = VK7K_Sync_Files::pull_specific_files_from_remote( $remote_url, $secret_key, $package['media_files'], $remote_ip );
-			if ( ! is_wp_error( $res_files ) && ! empty( $res_files['downloaded'] ) ) {
-				$media_pulled = (int) $res_files['downloaded'];
+		// Ensure local WooCommerce product caches and lookup tables are refreshed
+		if ( ! function_exists( 'wc_update_product_lookup_tables' ) && defined( 'WC_ABSPATH' ) && file_exists( WC_ABSPATH . 'includes/wc-product-functions.php' ) ) {
+			include_once WC_ABSPATH . 'includes/wc-product-functions.php';
+		}
+		if ( $post_id > 0 && 'product' === $post_type ) {
+			if ( function_exists( 'wc_delete_product_transients' ) ) {
+				wc_delete_product_transients( $post_id );
 			}
+			if ( function_exists( 'wc_update_product_lookup_tables' ) ) {
+				wc_update_product_lookup_tables( $post_id );
+			}
+			clean_post_cache( $post_id );
 		}
 
 		$post_title = get_the_title( $post_id );

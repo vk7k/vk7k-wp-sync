@@ -24,6 +24,9 @@ class VK7K_Sync_Admin {
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_assets' ) );
 		add_action( 'enqueue_block_editor_assets', array( $this, 'enqueue_block_editor_assets' ) );
 		add_action( 'admin_init', array( $this, 'handle_legacy_slug_redirect' ) );
+		add_action( 'add_meta_boxes', array( $this, 'register_sync_meta_boxes' ) );
+		add_filter( 'post_row_actions', array( $this, 'add_sync_row_actions' ), 10, 2 );
+		add_filter( 'page_row_actions', array( $this, 'add_sync_row_actions' ), 10, 2 );
 	}
 
 	/**
@@ -86,6 +89,15 @@ class VK7K_Sync_Admin {
 	 * Enqueue Admin CSS & JS.
 	 */
 	public function enqueue_assets( $hook ) {
+		$screen               = function_exists( 'get_current_screen' ) ? get_current_screen() : null;
+		$supported_post_types = array( 'product', 'post', 'page' );
+		$is_edit_screen       = in_array( $hook, array( 'post.php', 'post-new.php' ), true ) && $screen && in_array( $screen->post_type, $supported_post_types, true );
+		$is_list_screen       = ( 'edit.php' === $hook ) && $screen && in_array( $screen->post_type, $supported_post_types, true );
+
+		if ( $is_edit_screen || $is_list_screen ) {
+			$this->enqueue_classic_editor_assets( $screen, $is_list_screen );
+			return;
+		}
 		$is_sync_page = false;
 		if ( ! empty( $this->hook_suffix ) && $hook === $this->hook_suffix ) {
 			$is_sync_page = true;
@@ -118,6 +130,15 @@ class VK7K_Sync_Admin {
 		$active_target     = VK7K_Sync_Auth::get_active_target();
 		$settings          = VK7K_Sync_Auth::get_settings();
 
+		// Never hand credentials to the browser: the admin JS only needs URLs, ids and labels.
+		$active_target_js = self::strip_target_secrets( $active_target );
+		$targets_state_js = $targets_state;
+		if ( ! empty( $targets_state_js['targets'] ) && is_array( $targets_state_js['targets'] ) ) {
+			foreach ( $targets_state_js['targets'] as $target_id => $target_info ) {
+				$targets_state_js['targets'][ $target_id ] = self::strip_target_secrets( $target_info );
+			}
+		}
+
 		wp_localize_script(
 			'vk7k-sync-admin-js',
 			'vk7kSyncData',
@@ -127,11 +148,13 @@ class VK7K_Sync_Admin {
 				'siteUrl'         => home_url(),
 				'siteHost'        => wp_parse_url( home_url(), PHP_URL_HOST ) ?: 'localhost',
 				'role'            => ! empty( $settings['role'] ) ? $settings['role'] : 'master',
-				'secretKey'       => VK7K_Sync_Auth::get_local_secret_key(),
 				'hasPin'          => $has_pin,
 				'isVaultUnlocked' => $is_vault_unlocked,
-				'targetsState'    => $targets_state,
-				'activeTarget'    => $active_target,
+				'targetsState'    => $targets_state_js,
+				'activeTarget'    => $active_target_js,
+				'activeTheme'     => get_stylesheet(),
+				'themeName'       => wp_get_theme()->get( 'Name' ),
+				'isWooActive'     => class_exists( 'WooCommerce' ),
 				'i18n'            => array(
 					'roleMaster'            => __( '👑 Modo: MAESTRO (Fuente)', 'vk7k-wp-sync' ),
 					'roleSlave'             => __( '📥 Modo: ESCLAVO (Receptor)', 'vk7k-wp-sync' ),
@@ -192,6 +215,8 @@ class VK7K_Sync_Admin {
 				'isConfigured'  => ! empty( $remote_url ),
 				'settingsUrl'   => admin_url( 'admin.php?page=uxcribe-sync' ),
 				'pluginVersion' => VK7K_SYNC_VERSION,
+				'localVersion'  => VK7K_SYNC_VERSION,
+				'canUpdatePlugin' => current_user_can( 'manage_options' ),
 				'post'          => $current_post_data,
 				'i18n'         => array(
 					'pluginTitle'       => __( 'uxcribe.cl Sync', 'vk7k-wp-sync' ),
@@ -211,8 +236,304 @@ class VK7K_Sync_Admin {
 	}
 
 	/**
+	 * Remove credentials from a target structure before exposing it to JavaScript.
+	 *
+	 * @param mixed $target Target profile.
+	 * @return mixed Sanitized profile.
+	 */
+	public static function strip_target_secrets( $target ) {
+		if ( ! is_array( $target ) ) {
+			return $target;
+		}
+
+		$secret_fields = array( 'ssh_pass', 'remote_secret_key', 'local_secret_key', 'remote_key', 'local_key', 'pin', 'vault' );
+		foreach ( $secret_fields as $field ) {
+			unset( $target[ $field ] );
+		}
+
+		return $target;
+	}
+
+	/**
 	 * Render Admin Page.
 	 */
+	/**
+	 * Enqueue Classic Editor & Post List assets for WooCommerce Products, Posts and Pages.
+	 *
+	 * @param WP_Screen|null $screen
+	 * @param bool           $is_list_screen
+	 */
+	public function enqueue_classic_editor_assets( $screen, $is_list_screen = false ) {
+		if ( ! current_user_can( 'edit_posts' ) ) {
+			return;
+		}
+
+		$active_target = VK7K_Sync_Auth::get_active_target();
+		$settings      = VK7K_Sync_Auth::get_settings();
+		$remote_url    = ! empty( $active_target['remote_url'] ) ? $active_target['remote_url'] : ( ! empty( $active_target['url'] ) ? $active_target['url'] : ( $settings['remote_url'] ?? '' ) );
+		$target_name   = ! empty( $active_target['name'] ) ? $active_target['name'] : ( ! empty( $remote_url ) ? wp_parse_url( $remote_url, PHP_URL_HOST ) : '' );
+		$current_role  = ! empty( $settings['role'] ) ? $settings['role'] : 'master';
+
+		global $post;
+		$post_id    = $post ? (int) $post->ID : 0;
+		$post_title = $post ? get_the_title( $post ) : '';
+		$post_slug  = $post ? $post->post_name : '';
+		$post_type  = $screen && ! empty( $screen->post_type ) ? $screen->post_type : ( $post ? $post->post_type : 'product' );
+
+		wp_enqueue_style(
+			'vk7k-sync-classic-editor-css',
+			VK7K_SYNC_URL . 'admin/css/vk7k-sync-classic-editor.css',
+			array(),
+			VK7K_SYNC_VERSION
+		);
+
+		wp_enqueue_script(
+			'vk7k-sync-classic-editor-js',
+			VK7K_SYNC_URL . 'admin/js/vk7k-sync-classic-editor.js',
+			array( 'jquery' ),
+			VK7K_SYNC_VERSION,
+			true
+		);
+
+		wp_localize_script(
+			'vk7k-sync-classic-editor-js',
+			'vk7kSyncClassic',
+			array(
+				'ajaxUrl'      => admin_url( 'admin-ajax.php' ),
+				'nonce'        => wp_create_nonce( 'vk7k_sync_admin_nonce' ),
+				'remoteUrl'    => $remote_url,
+				'targetName'   => $target_name,
+				'role'         => $current_role,
+				'isConfigured' => ! empty( $remote_url ),
+				'settingsUrl'  => admin_url( 'admin.php?page=uxcribe-sync' ),
+				'postId'       => $post_id,
+				'postType'     => $post_type,
+				'postTitle'    => $post_title,
+				'postSlug'     => $post_slug,
+				'isListScreen' => $is_list_screen,
+				'pluginVersion'   => VK7K_SYNC_VERSION,
+				'canUpdatePlugin' => current_user_can( 'manage_options' ),
+				'i18n'         => array(
+					'confirmPull'       => __( '¿Estás seguro de que deseas traer este contenido desde el servidor remoto? Se sobrescribirá el contenido, metadatos y medios locales.', 'vk7k-wp-sync' ),
+					'pushing'           => __( 'Subiendo a servidor remoto...', 'vk7k-wp-sync' ),
+					'pulling'           => __( 'Trayendo desde servidor remoto...', 'vk7k-wp-sync' ),
+					'success'           => __( '¡Sincronización completada con éxito!', 'vk7k-wp-sync' ),
+					'viewRemote'        => __( 'Ver en remoto', 'vk7k-wp-sync' ),
+					'reloadEditor'      => __( 'Recargar Editor', 'vk7k-wp-sync' ),
+					'notConfigured'     => __( 'Servidor remoto no configurado. Configúralo en los ajustes de uxcribe.cl Sync.', 'vk7k-wp-sync' ),
+					'roleSlavePushWarn' => __( 'Este sitio está configurado en rol Esclavo (Receptor). La subida (Push) está bloqueada para proteger la fuente.', 'vk7k-wp-sync' ),
+					'inspecting'        => __( 'Inspeccionando dependencias del producto...', 'vk7k-wp-sync' ),
+				),
+			)
+		);
+	}
+
+	/**
+	 * Register Meta Box for Products, Posts and Pages.
+	 */
+	public function register_sync_meta_boxes() {
+		if ( ! current_user_can( 'edit_posts' ) ) {
+			return;
+		}
+
+		$post_types = array( 'product', 'post', 'page' );
+		foreach ( $post_types as $pt ) {
+			add_meta_box(
+				'vk7k_sync_metabox',
+				__( 'uxcribe.cl Sync: Push / Pull', 'vk7k-wp-sync' ),
+				array( $this, 'render_sync_metabox' ),
+				$pt,
+				'side',
+				'high'
+			);
+		}
+	}
+
+	/**
+	 * Render Meta Box HTML.
+	 *
+	 * @param WP_Post $post
+	 */
+	public function render_sync_metabox( $post ) {
+		$active_target = VK7K_Sync_Auth::get_active_target();
+		$settings      = VK7K_Sync_Auth::get_settings();
+		$remote_url    = ! empty( $active_target['remote_url'] ) ? $active_target['remote_url'] : ( ! empty( $active_target['url'] ) ? $active_target['url'] : ( $settings['remote_url'] ?? '' ) );
+		$target_name   = ! empty( $active_target['name'] ) ? $active_target['name'] : ( ! empty( $remote_url ) ? wp_parse_url( $remote_url, PHP_URL_HOST ) : '' );
+		$current_role  = ! empty( $settings['role'] ) ? $settings['role'] : 'master';
+		$is_configured = ! empty( $remote_url );
+		$is_product    = ( 'product' === $post->post_type );
+
+		?>
+		<div class="vk7k-metabox-container" data-post-id="<?php echo esc_attr( $post->ID ); ?>" data-post-type="<?php echo esc_attr( $post->post_type ); ?>" data-post-name="<?php echo esc_attr( $post->post_name ); ?>">
+			
+			<!-- Header Target Banner & Live Status -->
+			<div class="vk7k-mb-target-banner">
+				<div class="vk7k-mb-target-info">
+					<span class="vk7k-mb-target-label"><?php esc_html_e( 'SERVIDOR REMOTO', 'vk7k-wp-sync' ); ?></span>
+					<span class="vk7k-mb-target-url" title="<?php echo esc_attr( $remote_url ); ?>">
+						<?php echo esc_html( $target_name ?: 'No configurado' ); ?>
+					</span>
+				</div>
+				<?php if ( $is_configured ) : ?>
+					<span class="vk7k-sync-status-badge is-checking" id="vk7k-mb-status-badge">
+						<span class="vk7k-sync-dot"></span>
+						<span class="vk7k-badge-text"><?php esc_html_e( 'Comprobando...', 'vk7k-wp-sync' ); ?></span>
+					</span>
+				<?php else : ?>
+					<span class="vk7k-sync-status-badge is-offline">
+						<span class="vk7k-sync-dot"></span>
+						<span class="vk7k-badge-text"><?php esc_html_e( 'Sin configurar', 'vk7k-wp-sync' ); ?></span>
+					</span>
+				<?php endif; ?>
+			</div>
+
+			<!-- Role indicator bar -->
+			<?php if ( $is_configured ) : ?>
+				<div class="vk7k-mb-role-bar">
+					<span class="vk7k-mb-role-pill <?php echo 'slave' === $current_role ? 'is-slave' : 'is-master'; ?>">
+						<?php echo 'slave' === $current_role ? esc_html__( '📥 Rol: Esclavo (Receptor)', 'vk7k-wp-sync' ) : esc_html__( '👑 Rol: Maestro (Emisor)', 'vk7k-wp-sync' ); ?>
+					</span>
+				</div>
+			<?php endif; ?>
+
+			<!-- Version Mismatch Alert & Quick Sync Action -->
+			<div class="vk7k-mb-version-alert" id="vk7k-mb-version-alert" style="display:none;">
+				<div class="vk7k-mb-version-alert-msg" id="vk7k-mb-version-alert-msg"></div>
+				<?php if ( current_user_can( 'manage_options' ) ) : ?>
+					<button type="button" class="button button-secondary button-small vk7k-btn-mb-update-plugin" id="vk7k-btn-mb-update-plugin">
+						<span class="dashicons dashicons-update" style="margin-top: 2px;"></span>
+						<span><?php esc_html_e( 'Actualizar plugin en remoto', 'vk7k-wp-sync' ); ?></span>
+					</button>
+				<?php endif; ?>
+			</div>
+
+			<?php if ( ! $is_configured ) : ?>
+				<div class="vk7k-mb-notice vk7k-mb-notice-warn">
+					<?php esc_html_e( 'Debes vincular un entorno remoto en los ajustes de uxcribe.cl Sync para sincronizar.', 'vk7k-wp-sync' ); ?><br/>
+					<a href="<?php echo esc_url( admin_url( 'admin.php?page=uxcribe-sync' ) ); ?>" class="button button-small" style="margin-top: 6px;">
+						<?php esc_html_e( 'Configurar Sync', 'vk7k-wp-sync' ); ?>
+					</a>
+				</div>
+			<?php else : ?>
+				
+				<!-- Live Dependency / Inspection Box -->
+				<div class="vk7k-mb-inspect-card" id="vk7k-mb-inspect-card">
+					<div class="vk7k-mb-inspect-loading">
+						<span class="spinner is-active" style="float:none; margin: 0 4px 0 0; vertical-align: middle;"></span>
+						<span><?php esc_html_e( 'Analizando contenido y medios...', 'vk7k-wp-sync' ); ?></span>
+					</div>
+					<div class="vk7k-mb-inspect-content" style="display:none;">
+						<div class="vk7k-mb-inspect-row">
+							<span class="vk7k-mb-label"><?php esc_html_e( 'Tipo:', 'vk7k-wp-sync' ); ?></span>
+							<strong class="vk7k-mb-val" id="vk7k-mb-val-type"><?php echo $is_product ? esc_html__( 'Producto', 'vk7k-wp-sync' ) : esc_html( ucfirst( $post->post_type ) ); ?></strong>
+						</div>
+						<div class="vk7k-mb-inspect-row">
+							<span class="vk7k-mb-label"><?php esc_html_e( 'Medios/Fotos:', 'vk7k-wp-sync' ); ?></span>
+							<strong class="vk7k-mb-val" id="vk7k-mb-val-media">0</strong>
+						</div>
+						<div class="vk7k-mb-inspect-row" id="vk7k-mb-row-variations" style="<?php echo $is_product ? '' : 'display:none;'; ?>">
+							<span class="vk7k-mb-label"><?php esc_html_e( 'Variaciones:', 'vk7k-wp-sync' ); ?></span>
+							<strong class="vk7k-mb-val" id="vk7k-mb-val-variations">0</strong>
+						</div>
+						<div class="vk7k-mb-inspect-row">
+							<span class="vk7k-mb-label"><?php esc_html_e( 'Metadatos/Términos:', 'vk7k-wp-sync' ); ?></span>
+							<strong class="vk7k-mb-val" id="vk7k-mb-val-meta">0</strong>
+						</div>
+					</div>
+				</div>
+
+				<!-- Safeguards Options -->
+				<div class="vk7k-mb-options">
+					<label class="vk7k-mb-checkbox-label">
+						<input type="checkbox" id="vk7k-mb-chk-media" checked="checked" />
+						<span><?php esc_html_e( 'Sincronizar medios y galería adjunta', 'vk7k-wp-sync' ); ?></span>
+					</label>
+					<?php if ( $is_product ) : ?>
+						<label class="vk7k-mb-checkbox-label" title="<?php esc_attr_e( 'Protege el stock y ventas en vivo del servidor remoto si ya existe el producto.', 'vk7k-wp-sync' ); ?>">
+							<input type="checkbox" id="vk7k-mb-chk-stock" checked="checked" />
+							<span><strong><?php esc_html_e( 'Proteger inventario remoto', 'vk7k-wp-sync' ); ?></strong> <small>(no sobrescribir stock)</small></span>
+						</label>
+					<?php endif; ?>
+				</div>
+
+				<!-- Action Buttons -->
+				<div class="vk7k-mb-actions">
+					<button type="button" class="button button-primary button-large vk7k-btn-mb-push" id="vk7k-btn-mb-push" <?php echo 'slave' === $current_role ? 'disabled title="' . esc_attr__( 'Bloqueado en rol Esclavo', 'vk7k-wp-sync' ) . '"' : ''; ?>>
+						<span class="dashicons dashicons-upload" style="margin-top: 4px;"></span>
+						<?php esc_html_e( 'Push a Remoto (Subir)', 'vk7k-wp-sync' ); ?>
+					</button>
+
+					<button type="button" class="button button-secondary button-large vk7k-btn-mb-pull" id="vk7k-btn-mb-pull">
+						<span class="dashicons dashicons-download" style="margin-top: 4px;"></span>
+						<?php esc_html_e( 'Pull de Remoto (Traer)', 'vk7k-wp-sync' ); ?>
+					</button>
+				</div>
+
+				<!-- Live Progress / Feedback Box -->
+				<div class="vk7k-mb-status-box" id="vk7k-mb-status-box" style="display:none;">
+					<div class="vk7k-mb-status-spinner">
+						<span class="spinner is-active" style="float:none; margin: 0 6px 0 0; vertical-align: middle;"></span>
+						<span class="vk7k-mb-status-step"></span>
+					</div>
+					<div class="vk7k-mb-status-msg"></div>
+					<div class="vk7k-mb-status-actions" style="margin-top: 8px; display:none;">
+						<a href="#" target="_blank" class="button button-secondary button-small vk7k-mb-link-remote" style="display:none;">
+							<span class="dashicons dashicons-external" style="margin-top: 2px;"></span> <?php esc_html_e( 'Ver en Remoto', 'vk7k-wp-sync' ); ?>
+						</a>
+						<button type="button" class="button button-secondary button-small vk7k-mb-btn-reload" style="display:none;" onclick="window.location.reload();">
+							<span class="dashicons dashicons-update" style="margin-top: 2px;"></span> <?php esc_html_e( 'Recargar Editor', 'vk7k-wp-sync' ); ?>
+						</button>
+					</div>
+				</div>
+
+			<?php endif; ?>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Add Push & Pull actions to post list rows (WooCommerce Products, Posts, Pages).
+	 *
+	 * @param array   $actions
+	 * @param WP_Post $post
+	 * @return array
+	 */
+	public function add_sync_row_actions( $actions, $post ) {
+		if ( ! current_user_can( 'edit_post', $post->ID ) ) {
+			return $actions;
+		}
+
+		$supported = array( 'product', 'post', 'page' );
+		if ( ! in_array( $post->post_type, $supported, true ) ) {
+			return $actions;
+		}
+
+		$active_target = VK7K_Sync_Auth::get_active_target();
+		$settings      = VK7K_Sync_Auth::get_settings();
+		$remote_url    = ! empty( $active_target['remote_url'] ) ? $active_target['remote_url'] : ( ! empty( $active_target['url'] ) ? $active_target['url'] : ( $settings['remote_url'] ?? '' ) );
+		if ( empty( $remote_url ) ) {
+			return $actions;
+		}
+
+		$actions['vk7k_sync_push'] = sprintf(
+			'<a href="#" class="vk7k-sync-row-push" data-id="%d" data-title="%s" data-type="%s" style="color: #4f46e5; font-weight: 600;"><span class="dashicons dashicons-upload" style="font-size: 13px; width: 13px; height: 13px; vertical-align: text-bottom;"></span> %s</a>',
+			$post->ID,
+			esc_attr( get_the_title( $post ) ),
+			esc_attr( $post->post_type ),
+			esc_html__( 'Push a Remoto', 'vk7k-wp-sync' )
+		);
+
+		$actions['vk7k_sync_pull'] = sprintf(
+			'<a href="#" class="vk7k-sync-row-pull" data-id="%d" data-title="%s" data-type="%s" style="color: #0d9488; font-weight: 600;"><span class="dashicons dashicons-download" style="font-size: 13px; width: 13px; height: 13px; vertical-align: text-bottom;"></span> %s</a>',
+			$post->ID,
+			esc_attr( get_the_title( $post ) ),
+			esc_attr( $post->post_type ),
+			esc_html__( 'Pull de Remoto', 'vk7k-wp-sync' )
+		);
+
+		return $actions;
+	}
+
 	public function render_admin_page() {
 		$settings          = VK7K_Sync_Auth::get_settings();
 		$current_role      = ! empty( $settings['role'] ) ? $settings['role'] : 'master';
@@ -503,7 +824,10 @@ class VK7K_Sync_Admin {
 							<div id="vk7k-mode-http-section" style="<?php echo ! empty( $settings['use_ssh'] ) ? 'display:none;' : ''; ?>">
 								<div class="vk7k-form-group">
 									<label for="vk7k-remote-key"><strong><?php esc_html_e( 'Clave Secreta del WordPress Remoto:', 'vk7k-wp-sync' ); ?></strong></label>
-									<input type="password" id="vk7k-remote-key" name="remote_secret_key" value="<?php echo esc_attr( $settings['remote_secret_key'] ); ?>" placeholder="<?php esc_attr_e( 'Pega aquí la clave secreta del servidor remoto', 'vk7k-wp-sync' ); ?>" class="vk7k-input vk7k-code" />
+									<input type="password" id="vk7k-remote-key" name="remote_secret_key" value="" autocomplete="new-password" placeholder="<?php echo ! empty( $settings['remote_secret_key'] ) ? esc_attr__( '•••••••• clave guardada — deja vacío para conservarla', 'vk7k-wp-sync' ) : esc_attr__( 'Pega aquí la clave secreta del servidor remoto', 'vk7k-wp-sync' ); ?>" class="vk7k-input vk7k-code" />
+									<?php if ( ! empty( $settings['remote_secret_key'] ) ) : ?>
+										<p class="description"><?php esc_html_e( 'Por seguridad la clave no se muestra. Escríbela solo si deseas reemplazarla.', 'vk7k-wp-sync' ); ?></p>
+									<?php endif; ?>
 								</div>
 							</div>
 
@@ -558,7 +882,7 @@ class VK7K_Sync_Admin {
 					<div class="vk7k-sync-type-grid" id="vk7k-sync-type-selector">
 						
 						<!-- Card 1: WooCommerce Catalog -->
-						<div class="vk7k-sync-type-card" data-type="woocommerce_catalog">
+						<div class="vk7k-sync-type-card <?php echo class_exists( 'WooCommerce' ) ? 'is-selected' : ''; ?>" data-type="woocommerce_catalog">
 							<div class="vk7k-type-badge-pill"><?php esc_html_e( 'Productos + Fotos', 'vk7k-wp-sync' ); ?></div>
 							<div class="vk7k-type-icon">🛍️</div>
 							<h3 class="vk7k-type-title">
@@ -614,7 +938,7 @@ class VK7K_Sync_Admin {
 						</div>
 
 						<!-- Card 5: Granular DataGrid & Recipes -->
-						<div class="vk7k-sync-type-card is-granular is-selected" id="vk7k-card-open-granular" data-type="granular_recipes" style="border-color: #3b82f6; background: #eff6ff;">
+						<div class="vk7k-sync-type-card is-granular <?php echo ! class_exists( 'WooCommerce' ) ? 'is-selected' : ''; ?>" id="vk7k-card-open-granular" data-type="granular_recipes" style="border-color: #3b82f6; background: #eff6ff;">
 							<div class="vk7k-type-badge-pill" style="background:#3b82f6; color:#fff;"><?php esc_html_e( 'Nivel Fila / Excel', 'vk7k-wp-sync' ); ?></div>
 							<div class="vk7k-type-icon">📑</div>
 							<h3 class="vk7k-type-title" style="color: #1e40af;">
@@ -1060,6 +1384,12 @@ class VK7K_Sync_Admin {
 									<span class="dashicons dashicons-admin-page"></span> <?php esc_html_e( 'Páginas', 'vk7k-wp-sync' ); ?>
 									<span class="vk7k-tab-count" id="count-pages">0</span>
 								</button>
+								<?php if ( class_exists( 'WooCommerce' ) ) : ?>
+								<button type="button" class="vk7k-tab-btn" data-tab="products">
+									<span class="dashicons dashicons-cart"></span> <?php esc_html_e( 'Productos', 'vk7k-wp-sync' ); ?>
+									<span class="vk7k-tab-count" id="count-products">0</span>
+								</button>
+								<?php endif; ?>
 								<button type="button" class="vk7k-tab-btn" data-tab="cpts">
 									<span class="dashicons dashicons-products"></span> <?php esc_html_e( 'Entradas / CPTs', 'vk7k-wp-sync' ); ?>
 									<span class="vk7k-tab-count" id="count-cpts">0</span>
@@ -1123,6 +1453,12 @@ class VK7K_Sync_Admin {
 									<input type="checkbox" id="vk7k-chk-include-media" checked style="margin: 0;" />
 									<span><?php esc_html_e( 'Incluir fotos/archivos multimedia asociados automáticamente', 'vk7k-wp-sync' ); ?></span>
 								</label>
+								<?php if ( class_exists( 'WooCommerce' ) ) : ?>
+								<label style="display: flex; align-items: center; gap: 4px; cursor: pointer; font-weight: 500;" id="vk7k-lbl-protect-stock" title="<?php esc_attr_e( 'Protege el stock y ventas remotas de los productos existentes', 'vk7k-wp-sync' ); ?>">
+									<input type="checkbox" id="vk7k-chk-protect-stock" checked style="margin: 0;" />
+									<span><strong><?php esc_html_e( 'Proteger inventario remoto', 'vk7k-wp-sync' ); ?></strong></span>
+								</label>
+								<?php endif; ?>
 								<button type="button" id="vk7k-btn-clear-selection" class="button button-link" style="color: #0284c7; text-decoration: none; padding: 0; font-size: 0.8rem;">
 									<?php esc_html_e( 'Limpiar todo', 'vk7k-wp-sync' ); ?>
 								</button>

@@ -13,6 +13,7 @@
 	let initialCheckTimer = null;
 	let currentSelection = {
 		posts: [],
+		products: [],
 		media: [],
 		menus: [],
 		taxonomies: [],
@@ -21,7 +22,8 @@
 		plugins: [],
 		themes: [],
 		users: [],
-		sync_media: true
+		sync_media: true,
+		preserve_stock: true
 	};
 
 	$(document).ready(function() {
@@ -329,7 +331,7 @@
 					const rVer = res.data.remote_version || res.data.plugin_version;
 					const lVer = res.data.local_version || '1.3.4';
 					const deployBtn = `<button type="button" class="button button-small vk7k-manual-deploy-btn" style="margin-left:8px;"><span class="dashicons dashicons-upload" style="vertical-align:middle;font-size:15px;width:15px;height:15px;"></span> Desplegar v${lVer} local al remoto</button>`;
-					showConnectionAlert('warning', `<strong>⚠️ Discrepancia de versiones:</strong> ${siteName} tiene Plugin v${rVer} (Local: v${lVer}). Se recomienda actualizar vía GitHub Releases o ${deployBtn}`);
+					showConnectionAlert('warning', `<strong>⚠️ Discrepancia de versiones:</strong> ${siteName} tiene Plugin v${rVer} (Local: v${lVer}). Se recomienda desplegar la versión local con ${deployBtn}`);
 				} else {
 					showConnectionAlert('success', `<strong>✓ Conexión establecida:</strong> ${siteName}${wpVer}${pluginVer} está listo para sincronizar.`);
 				}
@@ -779,7 +781,11 @@
 					}
 				});
 				if (depRes.success) {
-					showConnectionAlert('success', `<strong>✓ Despliegue Exitoso:</strong> ${depRes.data.message}`);
+					const depVerified = Boolean(depRes.data && depRes.data.verified);
+					showConnectionAlert(depVerified ? 'success' : 'warning', `<strong>${depVerified ? '✓ Despliegue verificado' : '⚠️ Despliegue sin verificar'}:</strong> ${depRes.data.message}`);
+					if (!depVerified) {
+						$dBtn.prop('disabled', false).html('<span class="dashicons dashicons-upload"></span> Volver a verificar despliegue');
+					}
 				} else {
 					showConnectionAlert('error', `<strong>⚠️ Error al desplegar:</strong> ${getErrorMessage(depRes)}`);
 					$dBtn.prop('disabled', false).html('<span class="dashicons dashicons-upload"></span> Reintentar despliegue');
@@ -791,6 +797,89 @@
 		});
 	}
 
+	function getSyncConfig(type) {
+		type = type || selectedSyncType;
+		const activeTheme = (typeof vk7kSyncData !== 'undefined' && vk7kSyncData.activeTheme) ? vk7kSyncData.activeTheme : '';
+
+		const config = {
+			syncDb: false,
+			syncContent: false,
+			syncOptions: false,
+			syncTaxonomies: false,
+			syncComments: false,
+			syncWcOrders: false,
+			syncUsers: false,
+			syncLogs: false,
+			syncUploads: false,
+			mediaFilter: 'all',
+			syncPlugins: false,
+			selectedPlugins: [],
+			syncThemes: false,
+			selectedThemes: [],
+			preserveStock: true
+		};
+
+		if (type === 'woocommerce_catalog') {
+			config.syncDb         = true;
+			config.syncContent    = true;
+			config.syncOptions    = false;
+			config.syncTaxonomies = true;
+			config.syncComments   = false;
+			config.syncWcOrders   = false;
+			config.syncUsers      = false;
+			config.syncLogs       = false;
+			config.syncUploads    = true;
+			config.mediaFilter    = 'all';
+			config.preserveStock  = true;
+		} else if (type === 'fse_design_menus') {
+			config.syncThemes     = !!activeTheme;
+			config.selectedThemes = activeTheme ? [activeTheme] : [];
+		} else if (type === 'design_theme') {
+			config.syncThemes     = !!activeTheme;
+			config.selectedThemes = activeTheme ? [activeTheme] : [];
+		} else if (type === 'full_content_safe') {
+			config.syncDb         = true;
+			config.syncContent    = true;
+			config.syncOptions    = true;
+			config.syncTaxonomies = true;
+			config.syncComments   = true;
+			config.syncWcOrders   = false;
+			config.syncUsers      = false;
+			config.syncLogs       = false;
+			config.syncUploads    = true;
+			config.mediaFilter    = 'all';
+		}
+
+		// Also merge any present checkboxes in DOM if customized
+		if ($('#vk7k-opt-db').length) config.syncDb = $('#vk7k-opt-db').is(':checked');
+		if ($('#vk7k-opt-sync-content').length) config.syncContent = $('#vk7k-opt-sync-content').is(':checked');
+		if ($('#vk7k-opt-sync-options').length) config.syncOptions = $('#vk7k-opt-sync-options').is(':checked');
+		if ($('#vk7k-opt-sync-taxonomies').length) config.syncTaxonomies = $('#vk7k-opt-sync-taxonomies').is(':checked');
+		if ($('#vk7k-opt-sync-comments').length) config.syncComments = $('#vk7k-opt-sync-comments').is(':checked');
+		if ($('#vk7k-opt-sync-wc-orders').length) config.syncWcOrders = $('#vk7k-opt-sync-wc-orders').is(':checked');
+		if ($('#vk7k-opt-sync-users').length) config.syncUsers = $('#vk7k-opt-sync-users').is(':checked');
+		if ($('#vk7k-opt-sync-logs').length) config.syncLogs = $('#vk7k-opt-sync-logs').is(':checked');
+		if ($('#vk7k-opt-uploads').length) config.syncUploads = $('#vk7k-opt-uploads').is(':checked');
+		if ($('#vk7k-opt-plugins').length) {
+			config.syncPlugins = $('#vk7k-opt-plugins').is(':checked');
+			if (config.syncPlugins) {
+				const domPlugins = [];
+				$('.vk7k-plugin-cb:checked').each(function() { domPlugins.push($(this).val()); });
+				if (domPlugins.length) config.selectedPlugins = domPlugins;
+			}
+		}
+		if ($('#vk7k-opt-themes').length) {
+			config.syncThemes = $('#vk7k-opt-themes').is(':checked');
+			if (config.syncThemes) {
+				const domThemes = [];
+				$('.vk7k-theme-cb:checked').each(function() { domThemes.push($(this).val()); });
+				if (domThemes.length) config.selectedThemes = domThemes;
+			}
+		}
+
+		return config;
+	}
+
 	function initSyncTypeSelector() {
 		$('.vk7k-sync-type-card').on('click', function() {
 			const type = $(this).data('type');
@@ -799,107 +888,24 @@
 			selectedSyncType = type;
 
 			if (type === 'woocommerce_catalog') {
-				// DB setup: only content (posts/meta for products) and taxonomies, no options, comments, orders, users, logs
-				$('#vk7k-opt-db').prop('checked', true).trigger('change');
-				$('#vk7k-opt-sync-content').prop('checked', true);
-				$('#vk7k-opt-sync-options').prop('checked', false);
-				$('#vk7k-opt-sync-taxonomies').prop('checked', true);
-				$('#vk7k-opt-sync-comments').prop('checked', false);
-				$('#vk7k-opt-sync-wc-orders').prop('checked', false);
-				$('#vk7k-opt-sync-users').prop('checked', false);
-				$('#vk7k-opt-sync-logs').prop('checked', false);
-
-				// Uploads: checked (all)
-				$('#vk7k-opt-uploads').prop('checked', true).trigger('change');
-				$('input[name="media_filter"][value="all"]').prop('checked', true);
-
-				// Plugins & Themes: unchecked
-				$('#vk7k-opt-plugins').prop('checked', false).trigger('change');
-				$('#vk7k-opt-themes').prop('checked', false).trigger('change');
-
 				$('#vk7k-preset-summary-title').text('🛍️ Catálogo de WooCommerce Seleccionado');
 				$('#vk7k-preset-summary-details').html('Incluye: <strong>Productos, variaciones, atributos, categorías (`product_cat`, `product_tag`) y galería de imágenes (Uploads)</strong>.<br/>🔒 <em>Pedidos de WooCommerce y Cuentas de Usuarios quedan 100% protegidos y no serán alterados.</em>');
-				$('#vk7k-advanced-panel').slideUp(200);
 				$('#vk7k-selected-preset-summary').slideDown(200);
 			} else if (type === 'fse_design_menus') {
-				// DB setup: unchecked in UI so it triggers dedicated granular FSE step
-				$('#vk7k-opt-db').prop('checked', false).trigger('change');
-				$('#vk7k-opt-sync-content').prop('checked', false);
-				$('#vk7k-opt-sync-options').prop('checked', false);
-				$('#vk7k-opt-sync-taxonomies').prop('checked', false);
-				$('#vk7k-opt-sync-comments').prop('checked', false);
-				$('#vk7k-opt-sync-wc-orders').prop('checked', false);
-				$('#vk7k-opt-sync-users').prop('checked', false);
-				$('#vk7k-opt-sync-logs').prop('checked', false);
-
-				// Uploads: unchecked
-				$('#vk7k-opt-uploads').prop('checked', false).trigger('change');
-
-				// Plugins: unchecked
-				$('#vk7k-opt-plugins').prop('checked', false).trigger('change');
-
-				// Themes: checked (active theme)
-				$('#vk7k-opt-themes').prop('checked', true).trigger('change');
-
 				$('#vk7k-preset-summary-title').text('🖌️ Diseño, Menús y Plantillas FSE Seleccionado');
 				$('#vk7k-preset-summary-details').html('Incluye: <strong>Tema activo en disco + Menús de navegación (`wp_navigation`, `nav_menu_item`) + Cabeceras/Plantillas (`wp_template_part`, `wp_template`) + Estilos globales (`wp_global_styles`) + Asignaciones de menús (`theme_mods`)</strong>.<br/>🔒 <em>Cero riesgo de sobreescritura: Páginas, entradas del blog y pedidos de WooCommerce quedan 100% protegidos e intactos.</em>');
-				$('#vk7k-advanced-panel').slideUp(200);
 				$('#vk7k-selected-preset-summary').slideDown(200);
 			} else if (type === 'design_theme') {
-				// DB setup: unchecked completely (templates are synced via theme files)
-				$('#vk7k-opt-db').prop('checked', false).trigger('change');
-				$('#vk7k-opt-sync-content').prop('checked', false);
-				$('#vk7k-opt-sync-options').prop('checked', false);
-				$('#vk7k-opt-sync-taxonomies').prop('checked', false);
-				$('#vk7k-opt-sync-comments').prop('checked', false);
-				$('#vk7k-opt-sync-wc-orders').prop('checked', false);
-				$('#vk7k-opt-sync-users').prop('checked', false);
-				$('#vk7k-opt-sync-logs').prop('checked', false);
-
-				// Uploads: unchecked
-				$('#vk7k-opt-uploads').prop('checked', false).trigger('change');
-
-				// Plugins: unchecked
-				$('#vk7k-opt-plugins').prop('checked', false).trigger('change');
-
-				// Themes: checked (active theme)
-				$('#vk7k-opt-themes').prop('checked', true).trigger('change');
-
 				$('#vk7k-preset-summary-title').text('🎨 Solo Código y Archivos de Tema Seleccionado');
 				$('#vk7k-preset-summary-details').html('Incluye: <strong>Carpeta física del tema en disco (PHP, CSS, plantillas HTML originales, assets y theme.json)</strong>.<br/>⚡ <em>Ultra-rápido: Cero impacto en Base de Datos (no incluye menús, cabeceras editadas ni opciones).</em>');
-				$('#vk7k-advanced-panel').slideUp(200);
 				$('#vk7k-selected-preset-summary').slideDown(200);
 			} else if (type === 'full_content_safe') {
-				// DB setup: content, options, taxonomies, comments. Users & Orders UNCHECKED.
-				$('#vk7k-opt-db').prop('checked', true).trigger('change');
-				$('#vk7k-opt-sync-content').prop('checked', true);
-				$('#vk7k-opt-sync-options').prop('checked', true);
-				$('#vk7k-opt-sync-taxonomies').prop('checked', true);
-				$('#vk7k-opt-sync-comments').prop('checked', true);
-				$('#vk7k-opt-sync-wc-orders').prop('checked', false); // Preserves orders
-				$('#vk7k-opt-sync-users').prop('checked', false); // Preserves users
-				$('#vk7k-opt-sync-logs').prop('checked', false);
-
-				// Uploads: checked
-				$('#vk7k-opt-uploads').prop('checked', true).trigger('change');
-				$('input[name="media_filter"][value="all"]').prop('checked', true);
-
-				// Plugins & Themes: unchecked by default
-				$('#vk7k-opt-plugins').prop('checked', false).trigger('change');
-				$('#vk7k-opt-themes').prop('checked', false).trigger('change');
-
 				$('#vk7k-preset-summary-title').text('📦 Contenido, Menús y Diseño Seguro Seleccionado');
 				$('#vk7k-preset-summary-details').html('Incluye: <strong>Páginas, entradas, menús de navegación, cabeceras/plantillas FSE, opciones del tema y fotos (Uploads)</strong>.<br/>🔒 <em>Pedidos y usuarios quedan 100% protegidos e intactos.</em>');
-				$('#vk7k-advanced-panel').slideUp(200);
 				$('#vk7k-selected-preset-summary').slideDown(200);
 			} else if (type === 'granular_recipes') {
-				$('#vk7k-opt-db').prop('checked', false).trigger('change');
-				$('#vk7k-opt-uploads').prop('checked', false).trigger('change');
-				$('#vk7k-opt-plugins').prop('checked', false).trigger('change');
-				$('#vk7k-opt-themes').prop('checked', false).trigger('change');
-
 				$('#vk7k-preset-summary-title').text('🎯 Editor Granular y Recetas Guardadas Seleccionado');
-				$('#vk7k-preset-summary-details').html('Control quirúrgico: <strong>Selecciona individualmente páginas, entradas, CPTs, menús, opciones wp_options, plugins y temas</strong>.<br/>✨ <em>Personaliza los elementos en el Editor Granular o carga una Receta guardada previa.</em> <div style="margin-top:10px;"><button type="button" class="button button-primary button-small vk7k-btn-open-granular-modal"><span class="dashicons dashicons-admin-generic" style="vertical-align:middle;"></span> Abrir Editor Granular Lightbox</button></div>');
+				$('#vk7k-preset-summary-details').html('Control quirúrgico: <strong>Selecciona individualmente páginas, entradas, productos WooCommerce, CPTs, menús, opciones wp_options, plugins y temas</strong>.<br/>✨ <em>Personaliza los elementos en el Editor Granular o carga una Receta guardada previa.</em> <div style="margin-top:10px;"><button type="button" class="button button-primary button-small vk7k-btn-open-granular-modal"><span class="dashicons dashicons-admin-generic" style="vertical-align:middle;"></span> Abrir Editor Granular Lightbox</button></div>');
 				$('#vk7k-selected-preset-summary').slideDown(200);
 			}
 		});
@@ -911,7 +917,10 @@
 		});
 
 		// Trigger safe default preset on load if none selected
-		if (!$('.vk7k-sync-type-card.is-selected').length) {
+		const $preSelected = $('.vk7k-sync-type-card.is-selected');
+		if ($preSelected.length) {
+			$preSelected.first().trigger('click');
+		} else {
 			$('.vk7k-sync-type-card[data-type="woocommerce_catalog"]').trigger('click');
 		}
 	}
@@ -1016,43 +1025,38 @@
 			return;
 		}
 
-		const syncDb          = $('#vk7k-opt-db').is(':checked');
-		const syncContent     = $('#vk7k-opt-sync-content').is(':checked');
-		const syncOptions     = $('#vk7k-opt-sync-options').is(':checked');
-		const syncTaxonomies  = $('#vk7k-opt-sync-taxonomies').is(':checked');
-		const syncComments    = $('#vk7k-opt-sync-comments').is(':checked');
-		const syncWcOrders    = $('#vk7k-opt-sync-wc-orders').is(':checked');
-		const syncUsers       = $('#vk7k-opt-sync-users').is(':checked');
-		const syncLogs        = $('#vk7k-opt-sync-logs').is(':checked');
+		const config = getSyncConfig(selectedSyncType);
+		const syncDb          = config.syncDb;
+		const syncContent     = config.syncContent;
+		const syncOptions     = config.syncOptions;
+		const syncTaxonomies  = config.syncTaxonomies;
+		const syncComments    = config.syncComments;
+		const syncWcOrders    = config.syncWcOrders;
+		const syncUsers       = config.syncUsers;
+		const syncLogs        = config.syncLogs;
 
-		const syncUploads     = $('#vk7k-opt-uploads').is(':checked');
-		const mediaFilter     = $('input[name="media_filter"]:checked').val() || 'all';
+		const syncUploads     = config.syncUploads;
+		const mediaFilter     = config.mediaFilter || 'all';
 
-		const syncPlugins     = $('#vk7k-opt-plugins').is(':checked');
-		const selectedPlugins = [];
-		if (syncPlugins) {
-			$('.vk7k-plugin-cb:checked').each(function() {
-				selectedPlugins.push($(this).val());
-			});
-		}
+		const syncPlugins     = config.syncPlugins;
+		const selectedPlugins = config.selectedPlugins || [];
 
-		const syncThemes     = $('#vk7k-opt-themes').is(':checked');
-		const selectedThemes = [];
-		if (syncThemes) {
-			$('.vk7k-theme-cb:checked').each(function() {
-				selectedThemes.push($(this).val());
-			});
-		}
+		const syncThemes     = config.syncThemes;
+		const selectedThemes = config.selectedThemes || [];
 
 		const granularCount = (
 			(currentSelection.posts || []).length +
+			(currentSelection.products || []).length +
 			(currentSelection.media || []).length +
 			(currentSelection.menus || []).length +
 			(currentSelection.options || []).length +
 			(currentSelection.users || []).length +
 			(currentSelection.plugins || []).length +
 			(currentSelection.themes || []).length +
-			(currentSelection.terms || []).length
+			(currentSelection.terms || []).length +
+			(currentSelection.post_types || []).length +
+			(currentSelection.taxonomies || []).length +
+			(currentSelection.fse || []).length
 		);
 
 		if (selectedSyncType === 'granular_recipes') {
@@ -1060,6 +1064,8 @@
 				alert('Debes seleccionar al menos un elemento en el Editor Granular (o cargar una Receta). Haz clic en "Personalizar en Editor Granular".');
 				return;
 			}
+		} else if (selectedSyncType === 'fse_design_menus') {
+			// Valid preset using FSE engine
 		} else if (!syncDb && !syncUploads && (!syncPlugins || selectedPlugins.length === 0) && (!syncThemes || selectedThemes.length === 0)) {
 			alert('Debes seleccionar al menos un componente para sincronizar.');
 			return;
@@ -1109,17 +1115,30 @@
 			</div>
 		`);
 
+		// WooCommerce Catalog Item
+		if (selectedSyncType === 'woocommerce_catalog') {
+			$list.append(`
+				<div class="vk7k-summary-item">
+					<div class="vk7k-summary-head"><span class="dashicons dashicons-cart" style="color:#e11d48;"></span> <strong>Catálogo de WooCommerce</strong></div>
+					<div class="vk7k-summary-desc">Productos • Variaciones • Atributos • Categorías (product_cat) • Etiquetas (product_tag) • Galería de Imágenes (Uploads)<br/>🔒 <em>Pedidos y usuarios quedan 100% protegidos e intactos en el receptor.</em></div>
+				</div>
+			`);
+		}
+
 		// Granular item
 		if (selectedSyncType === 'granular_recipes') {
 			const parts = [];
 			if ((currentSelection.posts || []).length) parts.push(`${currentSelection.posts.length} Posts/Páginas`);
+			if ((currentSelection.products || []).length) parts.push(`${currentSelection.products.length} Productos`);
+			if ((currentSelection.post_types || []).length) parts.push(`Tipos: ${currentSelection.post_types.join(', ')}`);
+			if ((currentSelection.taxonomies || []).length) parts.push(`Taxonomías: ${currentSelection.taxonomies.join(', ')}`);
 			if ((currentSelection.media || []).length) parts.push(`${currentSelection.media.length} Medios`);
 			if ((currentSelection.menus || []).length) parts.push(`${currentSelection.menus.length} Menús`);
 			if ((currentSelection.options || []).length) parts.push(`${currentSelection.options.length} Opciones`);
 			if ((currentSelection.users || []).length) parts.push(`${currentSelection.users.length} Usuarios`);
 			if ((currentSelection.plugins || []).length) parts.push(`${currentSelection.plugins.length} Plugins`);
 			if ((currentSelection.themes || []).length) parts.push(`${currentSelection.themes.length} Temas`);
-			if ((currentSelection.terms || []).length) parts.push(`${currentSelection.terms.length} Taxonomías`);
+			if ((currentSelection.terms || []).length) parts.push(`${currentSelection.terms.length} Términos`);
 			$list.append(`
 				<div class="vk7k-summary-item">
 					<div class="vk7k-summary-head"><span class="dashicons dashicons-admin-generic" style="color:#6366f1;"></span> <strong>Elementos Granulares (${granularCount})</strong></div>
@@ -1248,33 +1267,24 @@
 		const sshPass = $('#vk7k-ssh-pass').val();
 		const sshPath = $('#vk7k-ssh-path').val();
 
-		const syncDb          = $('#vk7k-opt-db').is(':checked');
-		const syncContent     = $('#vk7k-opt-sync-content').is(':checked');
-		const syncOptions     = $('#vk7k-opt-sync-options').is(':checked');
-		const syncTaxonomies  = $('#vk7k-opt-sync-taxonomies').is(':checked');
-		const syncComments    = $('#vk7k-opt-sync-comments').is(':checked');
-		const syncWcOrders    = $('#vk7k-opt-sync-wc-orders').is(':checked');
-		const syncUsers       = $('#vk7k-opt-sync-users').is(':checked');
-		const syncLogs        = $('#vk7k-opt-sync-logs').is(':checked');
+		const config = getSyncConfig(selectedSyncType);
+		const syncDb          = config.syncDb;
+		const syncContent     = config.syncContent;
+		const syncOptions     = config.syncOptions;
+		const syncTaxonomies  = config.syncTaxonomies;
+		const syncComments    = config.syncComments;
+		const syncWcOrders    = config.syncWcOrders;
+		const syncUsers       = config.syncUsers;
+		const syncLogs        = config.syncLogs;
 
-		const syncUploads     = $('#vk7k-opt-uploads').is(':checked');
-		const mediaFilter     = $('input[name="media_filter"]:checked').val() || 'all';
+		const syncUploads     = config.syncUploads;
+		const mediaFilter     = config.mediaFilter || 'all';
 
-		const syncPlugins     = $('#vk7k-opt-plugins').is(':checked');
-		const selectedPlugins = [];
-		if (syncPlugins) {
-			$('.vk7k-plugin-cb:checked').each(function() {
-				selectedPlugins.push($(this).val());
-			});
-		}
+		const syncPlugins     = config.syncPlugins;
+		const selectedPlugins = config.selectedPlugins || [];
 
-		const syncThemes     = $('#vk7k-opt-themes').is(':checked');
-		const selectedThemes = [];
-		if (syncThemes) {
-			$('.vk7k-theme-cb:checked').each(function() {
-				selectedThemes.push($(this).val());
-			});
-		}
+		const syncThemes     = config.syncThemes;
+		const selectedThemes = config.selectedThemes || [];
 
 		const syncMaintenance = $('#vk7k-opt-maintenance').is(':checked');
 
@@ -1381,6 +1391,9 @@
 				setStepActive('db');
 				log('Paso 2: Ejecutando sincronización granular de entidades y complementos seleccionados...', 'info');
 				setProgress(30, 'Sincronizando elementos granulares');
+
+				currentSelection.sync_media     = $('#vk7k-chk-include-media').length ? ($('#vk7k-chk-include-media').is(':checked') ? 1 : 0) : 1;
+				currentSelection.preserve_stock = $('#vk7k-chk-protect-stock').length ? ($('#vk7k-chk-protect-stock').is(':checked') ? 1 : 0) : 1;
 
 				const granRes = await $.ajax({
 					url: vk7kSyncData.ajaxUrl,
@@ -2267,6 +2280,16 @@
 		// 2. Open Granular Lightbox Modal
 		$(document).on('click', '.vk7k-btn-open-granular-modal', function(e) {
 			e.preventDefault();
+			if (selectedSyncType === 'woocommerce_catalog' && $('.vk7k-granular-tabs .vk7k-tab-btn[data-tab="products"]').length) {
+				$('.vk7k-granular-tabs .vk7k-tab-btn').removeClass('is-active');
+				$('.vk7k-granular-tabs .vk7k-tab-btn[data-tab="products"]').addClass('is-active');
+				currentTab = 'products';
+				currentPage = 1;
+				currentSearch = '';
+				$('#vk7k-grid-search').val('');
+				$('#vk7k-cpt-filter-select').hide();
+				$('#vk7k-plugin-filter-actions').hide();
+			}
 			$('#vk7k-granular-modal').fadeIn(200);
 			inspectEntities();
 			fetchGridData();
@@ -2387,6 +2410,7 @@
 			e.preventDefault();
 			currentSelection = {
 				posts: [],
+				products: [],
 				media: [],
 				menus: [],
 				taxonomies: [],
@@ -2395,7 +2419,8 @@
 				plugins: [],
 				themes: [],
 				users: [],
-				sync_media: $('#vk7k-chk-include-media').is(':checked')
+				sync_media: $('#vk7k-chk-include-media').is(':checked'),
+				preserve_stock: $('#vk7k-chk-protect-stock').is(':checked')
 			};
 			$('#vk7k-grid-tbody .vk7k-row-checkbox').prop('checked', false);
 			$('#vk7k-grid-select-all').prop('checked', false);
@@ -2404,6 +2429,10 @@
 
 		$('#vk7k-chk-include-media').on('change', function() {
 			currentSelection.sync_media = $(this).is(':checked');
+		});
+
+		$('#vk7k-chk-protect-stock').on('change', function() {
+			currentSelection.preserve_stock = $(this).is(':checked');
 		});
 
 		// Save as Recipe trigger
@@ -2430,7 +2459,8 @@
 				description: desc,
 				direction: 'push',
 				entities: currentSelection,
-				sync_media: currentSelection.sync_media
+				sync_media: currentSelection.sync_media,
+				preserve_stock: currentSelection.preserve_stock
 			};
 
 			$.post(vk7kSyncData.ajaxUrl, {
@@ -2461,24 +2491,42 @@
 			if (recipe && recipe.entities) {
 				currentSelection = $.extend(true, {
 					posts: [],
+					products: [],
 					media: [],
 					menus: [],
 					taxonomies: [],
+					post_types: [],
 					terms: [],
 					options: [],
 					plugins: [],
 					themes: [],
 					users: [],
-					sync_media: true
+					sync_media: true,
+					preserve_stock: true
 				}, recipe.entities);
-				currentSelection.media = recipe.entities.media || recipe.media || [];
-				currentSelection.plugins = recipe.entities.plugins || recipe.plugins || [];
-				currentSelection.themes = recipe.entities.themes || recipe.themes || [];
-				currentSelection.users = recipe.entities.users || recipe.users || [];
+				currentSelection.products   = recipe.entities.products || recipe.products || [];
+				currentSelection.post_types = recipe.entities.post_types || [];
+				currentSelection.taxonomies = recipe.entities.taxonomies || [];
+				currentSelection.media      = recipe.entities.media || recipe.media || [];
+				currentSelection.plugins    = recipe.entities.plugins || recipe.plugins || [];
+				currentSelection.themes     = recipe.entities.themes || recipe.themes || [];
+				currentSelection.users      = recipe.entities.users || recipe.users || [];
+				currentSelection.terms      = recipe.entities.terms || recipe.terms || [];
 				currentSelection.sync_media = typeof recipe.sync_media !== 'undefined' ? !!recipe.sync_media : true;
+				currentSelection.preserve_stock = typeof recipe.preserve_stock !== 'undefined' ? !!recipe.preserve_stock : true;
 				$('#vk7k-chk-include-media').prop('checked', currentSelection.sync_media);
+				$('#vk7k-chk-protect-stock').prop('checked', currentSelection.preserve_stock);
 				$('#vk7k-active-recipe-name').text(recipe.name + ' (' + (recipe.description || 'personalizada') + ')');
 				$('#vk7k-btn-save-current-recipe').show();
+
+				// Ensure Card 5 is selected and preset summary reflects active recipe
+				$('.vk7k-sync-type-card').removeClass('is-selected');
+				$('.vk7k-sync-type-card[data-type="granular_recipes"]').addClass('is-selected');
+				selectedSyncType = 'granular_recipes';
+				$('#vk7k-preset-summary-title').text('🎯 Receta Activa: ' + recipe.name);
+				$('#vk7k-preset-summary-details').html(escapeHtml(recipe.description || 'Configuración granular cargada desde la receta.'));
+				$('#vk7k-selected-preset-summary').slideDown(200);
+
 				updateSelectedBadge();
 				fetchGridData();
 			}
@@ -2489,21 +2537,28 @@
 			e.preventDefault();
 			const total = (
 				(currentSelection.posts || []).length +
+				(currentSelection.products || []).length +
+				(currentSelection.post_types || []).length +
+				(currentSelection.taxonomies || []).length +
 				(currentSelection.media || []).length +
 				(currentSelection.menus || []).length +
 				(currentSelection.options || []).length +
 				(currentSelection.plugins || []).length +
 				(currentSelection.themes || []).length +
-				(currentSelection.users || []).length
+				(currentSelection.users || []).length +
+				(currentSelection.terms || []).length
 			);
 			if (total === 0) {
-				alert('Selecciona al menos una entidad (página, entrada, medio, menú, opción, usuario, plugin o tema) para sincronizar.');
+				alert('Selecciona al menos una entidad (página, entrada, producto, medio, menú, opción, usuario, plugin o tema) para sincronizar.');
 				return;
 			}
 
 			if (!confirm('¿Deseas ejecutar la sincronización granular de los ' + total + ' elementos seleccionados hacia el servidor remoto?')) {
 				return;
 			}
+
+			currentSelection.sync_media     = $('#vk7k-chk-include-media').is(':checked') ? 1 : 0;
+			currentSelection.preserve_stock = $('#vk7k-chk-protect-stock').length ? ($('#vk7k-chk-protect-stock').is(':checked') ? 1 : 0) : 1;
 
 			const $btn = $(this);
 			const origHtml = $btn.html();
@@ -2543,6 +2598,9 @@
 						cptOpts += '<option value="' + pt.name + '">' + escapeHtml(pt.label) + ' (' + pt.count + ')</option>';
 					});
 					$('#vk7k-cpt-filter-select').html(cptOpts);
+					if (typeof res.data.products_count !== 'undefined') {
+						$('#count-products').attr('title', 'Total publicados: ' + res.data.products_count);
+					}
 					if (typeof res.data.media_count !== 'undefined') {
 						$('#count-media').attr('title', 'Total en biblioteca: ' + res.data.media_count);
 					}
@@ -2565,6 +2623,7 @@
 			let queryType = currentTab;
 			let queryTax = '';
 			if (currentTab === 'pages') queryType = 'page';
+			if (currentTab === 'products') queryType = 'product';
 			if (currentTab === 'cpts') queryType = currentCpt;
 			if (currentTab === 'media') queryType = 'attachment';
 			if (currentTab === 'menus') queryType = 'nav_menu_item';
@@ -2672,6 +2731,7 @@
 			if (tab === 'themes') return (currentSelection.themes || []).indexOf(String(id)) !== -1;
 			if (tab === 'options') return (currentSelection.options || []).indexOf(String(id)) !== -1;
 			const intId = parseInt(id) || id;
+			if (tab === 'products') return (currentSelection.products || []).indexOf(intId) !== -1 || (currentSelection.posts || []).indexOf(intId) !== -1;
 			if (tab === 'pages' || tab === 'cpts') return (currentSelection.posts || []).indexOf(intId) !== -1;
 			if (tab === 'media') return (currentSelection.media || []).indexOf(intId) !== -1;
 			if (tab === 'menus') return (currentSelection.menus || []).indexOf(intId) !== -1;
@@ -2695,6 +2755,10 @@
 				currentSelection.options = currentSelection.options || [];
 				list = currentSelection.options;
 				val = String(id);
+			} else if (tab === 'products') {
+				currentSelection.products = currentSelection.products || [];
+				list = currentSelection.products;
+				val = parseInt(id) || id;
 			} else if (tab === 'pages' || tab === 'cpts') {
 				currentSelection.posts = currentSelection.posts || [];
 				list = currentSelection.posts;
@@ -2727,16 +2791,21 @@
 
 		function updateSelectedBadge() {
 			const pCount = (currentSelection.posts || []).length;
+			const prodCount = (currentSelection.products || []).length;
 			const medCount = (currentSelection.media || []).length;
 			const mCount = (currentSelection.menus || []).length;
 			const oCount = (currentSelection.options || []).length;
 			const plCount = (currentSelection.plugins || []).length;
 			const thCount = (currentSelection.themes || []).length;
 			const uCount = (currentSelection.users || []).length;
-			const total = pCount + medCount + mCount + oCount + plCount + thCount + uCount;
+			const tCount = (currentSelection.terms || []).length;
+			const ptCount = (currentSelection.post_types || []).length;
+			const taxCount = (currentSelection.taxonomies || []).length;
+			const total = pCount + prodCount + medCount + mCount + oCount + plCount + thCount + uCount + tCount + (ptCount ? 1 : 0);
 
 			$('#vk7k-total-selected-count').text(total);
 			$('#count-pages').text(pCount);
+			$('#count-products').text(prodCount || (currentSelection.post_types && currentSelection.post_types.indexOf('product') !== -1 ? 'Todo' : 0));
 			$('#count-cpts').text(pCount);
 			$('#count-media').text(medCount);
 			$('#count-menus').text(mCount);
@@ -2747,8 +2816,12 @@
 
 			const parts = [];
 			if (pCount) parts.push(pCount + ' posts/páginas');
+			if (prodCount) parts.push(prodCount + ' productos');
+			if (ptCount) parts.push('Tipos: ' + currentSelection.post_types.join(', '));
+			if (taxCount) parts.push('Taxonomías: ' + currentSelection.taxonomies.join(', '));
 			if (medCount) parts.push(medCount + ' medios');
 			if (mCount) parts.push(mCount + ' menús');
+			if (tCount) parts.push(tCount + ' taxonomías');
 			if (oCount) parts.push(oCount + ' opciones');
 			if (uCount) parts.push(uCount + ' usuarios');
 			if (plCount) parts.push(plCount + ' plugins');

@@ -23,6 +23,15 @@ Plugin de sincronización y clonación de sitios WordPress (Push / Pull) desarro
   - Sincroniza `wp-content/uploads`, plugins y temas.
 - **Bypass Directo de IP (DNS / Cloudflare)**:
   - Permite configurar una IP de destino para resolver peticiones cURL directamente si el DNS local aún no se ha propagado o si está detrás de proxies inversos.
+- **Sincronización Granular de Productos WooCommerce (Push / Pull)**:
+  - **Meta Box en Editor Clásico y Bloques**: Botones dedicados "Push a Remoto" y "Pull desde Remoto" en la pantalla de edición del producto y enlaces directos en la lista de productos (`edit.php?post_type=product`).
+  - **Soporte Completo de Variaciones y Atributos**: Sincroniza productos simples y variables, todas sus variaciones (`product_variation`), taxonomías de atributos globales (`woocommerce_attribute_taxonomies`), términos y metadatos (`termmeta`).
+  - **Galería Multimedia Completa**: Descubre y transfiere fotos destacadas, galerías de productos (`_product_image_gallery`), imágenes individuales de cada variación y miniaturas de categorías.
+  - **Regeneración de Tablas de Búsqueda (Lookup)**: Actualiza automáticamente `wc_product_meta_lookup` y purga transientes de WooCommerce (`wc_delete_product_transients`) para que los precios, visibilidad y filtros funcionen de inmediato.
+  - **Salvaguardas de Servidor Remoto**:
+    - **Protección de Inventario en Vivo**: Opción para preservar stock (`_stock`, `_stock_status`) del servidor remoto para no alterar ventas reales en producción.
+    - **Preservación de Variaciones y Pedidos Históricos**: Coincidencia inteligente de variaciones por SKU y atributos para conservar los IDs remotos originales, protegiendo las órdenes existentes en `woocommerce_order_itemmeta`.
+    - **Cero Impacto en Pedidos y Clientes**: No altera tablas de órdenes (`wc_orders`, `shop_order`) ni cuentas de usuarios.
 - **Menú Unificado Uxcribe.cl**:
   - Integrado bajo el menú corporativo de WordPress **Uxcribe.cl**, unificando la administración de plugins.
 - **Panel Moderno y Registro en Tiempo Real**:

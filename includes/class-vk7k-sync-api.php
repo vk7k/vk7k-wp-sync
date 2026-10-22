@@ -431,6 +431,29 @@ class VK7K_Sync_API {
 	}
 
 	/**
+	 * Read the plugin Version header straight from disk (not from loaded code).
+	 *
+	 * Lets a deploy be distinguished from a PHP opcache that is still serving
+	 * the previous plugin build: if the file on disk is already the new version
+	 * but the running constant is old, the server has not reloaded the code yet.
+	 *
+	 * @return string Version header, or an empty string when unreadable.
+	 */
+	public static function get_disk_plugin_version() {
+		if ( ! defined( 'VK7K_SYNC_FILE' ) || ! file_exists( VK7K_SYNC_FILE ) ) {
+			return '';
+		}
+
+		if ( ! function_exists( 'get_file_data' ) ) {
+			return '';
+		}
+
+		$data = get_file_data( VK7K_SYNC_FILE, array( 'Version' => 'Version' ) );
+
+		return ! empty( $data['Version'] ) ? (string) $data['Version'] : '';
+	}
+
+	/**
 	 * Test connection and return system capacity metrics.
 	 */
 	public static function handle_auth_test( $request ) {
@@ -456,6 +479,7 @@ class VK7K_Sync_API {
 			'wp_version'               => $wp_version,
 			'php_version'              => phpversion(),
 			'plugin_version'           => defined( 'VK7K_SYNC_VERSION' ) ? VK7K_SYNC_VERSION : '1.0.0',
+			'plugin_version_disk'      => self::get_disk_plugin_version(),
 			'db_prefix'                => $wpdb->prefix,
 			'max_upload_size'          => $upload_max_bytes,
 			'post_max_size'            => $post_max_bytes,
@@ -562,12 +586,16 @@ class VK7K_Sync_API {
 	public static function handle_db_push_posts( $request ) {
 		global $wpdb;
 
-		$params             = $request->get_json_params();
-		$posts              = ! empty( $params['posts'] ) ? (array) $params['posts'] : (array) $request->get_param( 'posts' );
-		$postmeta           = ! empty( $params['postmeta'] ) ? (array) $params['postmeta'] : (array) $request->get_param( 'postmeta' );
-		$term_relationships = ! empty( $params['term_relationships'] ) ? (array) $params['term_relationships'] : (array) $request->get_param( 'term_relationships' );
-		$terms              = ! empty( $params['terms'] ) ? (array) $params['terms'] : (array) $request->get_param( 'terms' );
-		$purge_post_type    = ! empty( $params['purge_post_type'] ) ? sanitize_key( $params['purge_post_type'] ) : '';
+		$params                  = $request->get_json_params();
+		$posts                   = ! empty( $params['posts'] ) ? (array) $params['posts'] : (array) $request->get_param( 'posts' );
+		$postmeta                = ! empty( $params['postmeta'] ) ? (array) $params['postmeta'] : (array) $request->get_param( 'postmeta' );
+		$term_relationships      = ! empty( $params['term_relationships'] ) ? (array) $params['term_relationships'] : (array) $request->get_param( 'term_relationships' );
+		$terms                   = ! empty( $params['terms'] ) ? (array) $params['terms'] : (array) $request->get_param( 'terms' );
+		$termmeta                = ! empty( $params['termmeta'] ) ? (array) $params['termmeta'] : (array) $request->get_param( 'termmeta' );
+		$wc_attribute_taxonomies = ! empty( $params['wc_attribute_taxonomies'] ) ? (array) $params['wc_attribute_taxonomies'] : (array) $request->get_param( 'wc_attribute_taxonomies' );
+		$wc_product_meta_lookup  = ! empty( $params['wc_product_meta_lookup'] ) ? (array) $params['wc_product_meta_lookup'] : (array) $request->get_param( 'wc_product_meta_lookup' );
+		$preserve_stock          = ! empty( $params['preserve_stock'] ) || ! empty( $request->get_param( 'preserve_stock' ) );
+		$purge_post_type         = ! empty( $params['purge_post_type'] ) ? sanitize_key( $params['purge_post_type'] ) : '';
 
 		if ( empty( $posts ) && empty( $purge_post_type ) ) {
 			return new WP_Error( 'vk7k_empty_posts', 'No se recibieron entradas para sincronizar.', array( 'status' => 400 ) );
@@ -593,6 +621,34 @@ class VK7K_Sync_API {
 				$wpdb->query( "DELETE FROM `{$wpdb->postmeta}` WHERE post_id IN ({$ids_in})" );
 				$wpdb->query( "DELETE FROM `{$wpdb->term_relationships}` WHERE object_id IN ({$ids_in})" );
 				$wpdb->query( "DELETE FROM `{$wpdb->posts}` WHERE ID IN ({$ids_in})" );
+			}
+		}
+
+		// 0. Upsert WooCommerce Attribute Taxonomies definitions (pa_*)
+		if ( ! empty( $wc_attribute_taxonomies ) ) {
+			$wc_attr_table = "{$wpdb->prefix}woocommerce_attribute_taxonomies";
+			$table_exists  = $wpdb->get_var( $wpdb->prepare( "SHOW TABLES LIKE %s", $wc_attr_table ) );
+			if ( $table_exists ) {
+				foreach ( $wc_attribute_taxonomies as $at ) {
+					if ( empty( $at['attribute_name'] ) ) {
+						continue;
+					}
+					$clean_name  = sanitize_title( $at['attribute_name'] );
+					$existing_id = (int) $wpdb->get_var( $wpdb->prepare( "SELECT attribute_id FROM `{$wc_attr_table}` WHERE attribute_name = %s", $clean_name ) );
+					$attr_data   = array(
+						'attribute_name'    => $clean_name,
+						'attribute_label'   => ! empty( $at['attribute_label'] ) ? $at['attribute_label'] : $clean_name,
+						'attribute_type'    => ! empty( $at['attribute_type'] ) ? $at['attribute_type'] : 'select',
+						'attribute_orderby' => ! empty( $at['attribute_orderby'] ) ? $at['attribute_orderby'] : 'menu_order',
+						'attribute_public'  => isset( $at['attribute_public'] ) ? (int) $at['attribute_public'] : 0,
+					);
+					if ( $existing_id > 0 ) {
+						$wpdb->update( $wc_attr_table, $attr_data, array( 'attribute_id' => $existing_id ) );
+					} else {
+						$wpdb->insert( $wc_attr_table, $attr_data );
+					}
+				}
+				delete_transient( 'wc_attribute_taxonomies' );
 			}
 		}
 
@@ -623,7 +679,60 @@ class VK7K_Sync_API {
 			);
 		}
 
-		// 2. Upsert posts with smart slug matching and ID mapping
+		// 1.1 Upsert termmeta if provided
+		if ( ! empty( $termmeta ) ) {
+			foreach ( $termmeta as $tm ) {
+				if ( empty( $tm['term_id'] ) || empty( $tm['meta_key'] ) ) {
+					continue;
+				}
+				$t_id  = (int) $tm['term_id'];
+				$m_key = sanitize_text_field( $tm['meta_key'] );
+				$m_val = $tm['meta_value'] ?? '';
+				if ( $replacer && is_string( $m_val ) ) {
+					$m_val = $replacer->replace( $m_val );
+				}
+				$existing_meta_id = (int) $wpdb->get_var( $wpdb->prepare(
+					"SELECT meta_id FROM `{$wpdb->termmeta}` WHERE term_id = %d AND meta_key = %s LIMIT 1",
+					$t_id,
+					$m_key
+				) );
+				if ( $existing_meta_id > 0 ) {
+					$wpdb->update( $wpdb->termmeta, array( 'meta_value' => $m_val ), array( 'meta_id' => $existing_meta_id ) );
+				} else {
+					$wpdb->insert( $wpdb->termmeta, array(
+						'term_id'    => $t_id,
+						'meta_key'   => $m_key,
+						'meta_value' => $m_val,
+					) );
+				}
+			}
+		}
+
+		// 1.2 Pre-index local attachment relative files from postmeta for robust remote matching
+		$local_attached_files = array();
+		foreach ( $postmeta as $pm ) {
+			if ( ( $pm['meta_key'] ?? '' ) === '_wp_attached_file' && ! empty( $pm['meta_value'] ) ) {
+				$local_attached_files[ (int) ( $pm['post_id'] ?? 0 ) ] = trim( (string) $pm['meta_value'] );
+			}
+		}
+
+		// 2. Sort posts:
+		// Regular posts/pages/products first, attachments second, product_variation child posts last
+		usort( $posts, function( $a, $b ) {
+			$type_order = function( $p ) {
+				$pt = $p['post_type'] ?? '';
+				if ( 'product_variation' === $pt ) {
+					return 3;
+				}
+				if ( 'attachment' === $pt ) {
+					return 2;
+				}
+				return 1;
+			};
+			return $type_order( $a ) <=> $type_order( $b );
+		} );
+
+		// Upsert posts with smart slug matching, parent re-mapping, attachment matching and variation ID preservation
 		$synced_ids = array();
 		$id_map     = array();
 
@@ -638,6 +747,11 @@ class VK7K_Sync_API {
 						$post_row[ $k ] = $replacer->replace( $v );
 					}
 				}
+			}
+
+			// Re-map parent ID if parent was already mapped
+			if ( ! empty( $post_row['post_parent'] ) && isset( $id_map[ (int) $post_row['post_parent'] ] ) ) {
+				$post_row['post_parent'] = $id_map[ (int) $post_row['post_parent'] ];
 			}
 
 			// If this is an FSE template/template_part, remove any conflicting post with same post_type + post_name but different ID
@@ -660,9 +774,104 @@ class VK7K_Sync_API {
 				}
 			}
 
-			// Check if a post with the same slug + post_type already exists on remote
 			$target_pid = $pid;
-			if ( ! empty( $post_row['post_name'] ) && ! empty( $post_row['post_type'] ) && 'attachment' !== $post_row['post_type'] ) {
+
+			// A) Handle WooCommerce product_variation matching to preserve remote variation IDs and avoid duplicate variations
+			if ( 'product_variation' === ( $post_row['post_type'] ?? '' ) ) {
+				$target_parent  = (int) ( $post_row['post_parent'] ?? 0 );
+				$matched_var_id = 0;
+				if ( $target_parent > 0 ) {
+					// 1. Try matching by SKU if local variation has _sku
+					$local_sku = '';
+					foreach ( $postmeta as $pm_cand ) {
+						if ( (int) ( $pm_cand['post_id'] ?? 0 ) === $pid && '_sku' === ( $pm_cand['meta_key'] ?? '' ) && ! empty( $pm_cand['meta_value'] ) ) {
+							$local_sku = trim( (string) $pm_cand['meta_value'] );
+							break;
+						}
+					}
+					if ( ! empty( $local_sku ) ) {
+						$matched_var_id = (int) $wpdb->get_var( $wpdb->prepare(
+							"SELECT p.ID FROM `{$wpdb->posts}` p 
+							 INNER JOIN `{$wpdb->postmeta}` pm ON p.ID = pm.post_id 
+							 WHERE p.post_type = 'product_variation' AND p.post_parent = %d AND pm.meta_key = '_sku' AND pm.meta_value = %s LIMIT 1",
+							$target_parent,
+							$local_sku
+						) );
+					}
+					// 2. Try matching by slug / post_name
+					if ( ! $matched_var_id && ! empty( $post_row['post_name'] ) ) {
+						$matched_var_id = (int) $wpdb->get_var( $wpdb->prepare(
+							"SELECT ID FROM `{$wpdb->posts}` WHERE post_type = 'product_variation' AND post_parent = %d AND post_name = %s LIMIT 1",
+							$target_parent,
+							$post_row['post_name']
+						) );
+					}
+					// 3. Fallback: match by menu_order
+					if ( ! $matched_var_id && isset( $post_row['menu_order'] ) ) {
+						$matched_var_id = (int) $wpdb->get_var( $wpdb->prepare(
+							"SELECT ID FROM `{$wpdb->posts}` WHERE post_type = 'product_variation' AND post_parent = %d AND menu_order = %d LIMIT 1",
+							$target_parent,
+							(int) $post_row['menu_order']
+						) );
+					}
+				}
+				if ( $matched_var_id > 0 ) {
+					$target_pid = $matched_var_id;
+				} else {
+					// Check if exact ID is free or occupied on remote
+					$id_taken = (int) $wpdb->get_var( $wpdb->prepare( "SELECT ID FROM `{$wpdb->posts}` WHERE ID = %d", $pid ) );
+					if ( $id_taken > 0 ) {
+						$target_pid = 0; // Let auto-increment assign fresh ID
+					}
+				}
+			}
+			// B) Handle attachments: match existing attachment by _wp_attached_file relative path, GUID or slug
+			elseif ( 'attachment' === ( $post_row['post_type'] ?? '' ) ) {
+				$rel_file       = $local_attached_files[ $pid ] ?? '';
+				$matched_att_id = 0;
+
+				// 1. Primary match: relative file path in uploads (e.g. 2026/09/conjunto.png)
+				if ( ! empty( $rel_file ) ) {
+					$matched_att_id = (int) $wpdb->get_var( $wpdb->prepare(
+						"SELECT pm.post_id FROM `{$wpdb->postmeta}` pm 
+						 INNER JOIN `{$wpdb->posts}` p ON pm.post_id = p.ID 
+						 WHERE p.post_type = 'attachment' AND pm.meta_key = '_wp_attached_file' AND pm.meta_value = %s 
+						 LIMIT 1",
+						$rel_file
+					) );
+				}
+
+				// 2. Secondary match: by GUID (with remote domain replaced)
+				if ( ! $matched_att_id && ! empty( $post_row['guid'] ) ) {
+					$target_guid = $replacer ? $replacer->replace( $post_row['guid'] ) : $post_row['guid'];
+					$matched_att_id = (int) $wpdb->get_var( $wpdb->prepare(
+						"SELECT ID FROM `{$wpdb->posts}` WHERE post_type = 'attachment' AND guid = %s LIMIT 1",
+						$target_guid
+					) );
+				}
+
+				// 3. Tertiary match: by post_name (slug)
+				if ( ! $matched_att_id && ! empty( $post_row['post_name'] ) ) {
+					$matched_att_id = (int) $wpdb->get_var( $wpdb->prepare(
+						"SELECT ID FROM `{$wpdb->posts}` WHERE post_type = 'attachment' AND post_name = %s LIMIT 1",
+						$post_row['post_name']
+					) );
+				}
+
+				if ( $matched_att_id > 0 ) {
+					$target_pid = $matched_att_id;
+				} else {
+					// Check if exact local ID is taken by ANY post on remote
+					$id_taken = (int) $wpdb->get_var( $wpdb->prepare( "SELECT ID FROM `{$wpdb->posts}` WHERE ID = %d", $pid ) );
+					if ( $id_taken > 0 ) {
+						$target_pid = 0; // Insert as fresh attachment with auto-increment ID
+					} else {
+						$target_pid = $pid; // Safe to keep original ID
+					}
+				}
+			}
+			// C) Handle standard posts, pages and custom post types: match by slug + post_type
+			elseif ( ! empty( $post_row['post_name'] ) && ! empty( $post_row['post_type'] ) ) {
 				$matched_slug_id = (int) $wpdb->get_var(
 					$wpdb->prepare(
 						"SELECT ID FROM `{$wpdb->posts}` WHERE (post_name = %s OR post_name LIKE %s) AND post_type = %s ORDER BY ID DESC LIMIT 1",
@@ -673,24 +882,6 @@ class VK7K_Sync_API {
 				);
 				if ( $matched_slug_id > 0 ) {
 					$target_pid = $matched_slug_id;
-				}
-			}
-
-			// For attachments, try matching exact local ID first; if occupied by another post_type, check by attached relative file path or guid
-			if ( 'attachment' === ( $post_row['post_type'] ?? '' ) ) {
-				$existing_at_id = $wpdb->get_row( $wpdb->prepare( "SELECT ID, post_type FROM `{$wpdb->posts}` WHERE ID = %d", $pid ) );
-				if ( $existing_at_id && 'attachment' !== $existing_at_id->post_type ) {
-					// ID is occupied by a page/post, check if this attachment already exists under another ID by guid or attached file
-					$matched_att_id = 0;
-					if ( ! empty( $post_row['guid'] ) ) {
-						$matched_att_id = (int) $wpdb->get_var( $wpdb->prepare( "SELECT ID FROM `{$wpdb->posts}` WHERE post_type = 'attachment' AND guid = %s LIMIT 1", $post_row['guid'] ) );
-					}
-					if ( ! $matched_att_id && ! empty( $post_row['post_name'] ) ) {
-						$matched_att_id = (int) $wpdb->get_var( $wpdb->prepare( "SELECT ID FROM `{$wpdb->posts}` WHERE post_type = 'attachment' AND post_name = %s LIMIT 1", $post_row['post_name'] ) );
-					}
-					$target_pid = $matched_att_id > 0 ? $matched_att_id : 0;
-				} else {
-					$target_pid = $pid;
 				}
 			}
 
@@ -733,6 +924,20 @@ class VK7K_Sync_API {
 		}
 
 		// 3. Upsert postmeta for synced posts
+		// Safeguard: Capture remote live stock values if preserve_stock is requested
+		$existing_stocks = array();
+		if ( $preserve_stock && ! empty( $synced_ids ) ) {
+			$ids_in_str = implode( ',', array_map( 'intval', $synced_ids ) );
+			$stock_rows = $wpdb->get_results(
+				"SELECT post_id, meta_key, meta_value FROM `{$wpdb->postmeta}` 
+				 WHERE post_id IN ({$ids_in_str}) AND meta_key IN ('_stock', '_stock_status', '_manage_stock', '_backorders')",
+				ARRAY_A
+			);
+			foreach ( $stock_rows as $sr ) {
+				$existing_stocks[ (int) $sr['post_id'] ][ $sr['meta_key'] ] = $sr['meta_value'];
+			}
+		}
+
 		if ( ! empty( $synced_ids ) ) {
 			$ids_in = implode( ',', array_map( 'intval', $synced_ids ) );
 			$wpdb->query( "DELETE FROM `{$wpdb->postmeta}` WHERE post_id IN ({$ids_in})" );
@@ -743,13 +948,85 @@ class VK7K_Sync_API {
 		foreach ( $postmeta as $m ) {
 			unset( $m['meta_id'] );
 			$orig_post_id = (int) ( $m['post_id'] ?? 0 );
-			$m['post_id'] = isset( $id_map[ $orig_post_id ] ) ? $id_map[ $orig_post_id ] : $orig_post_id;
+			$target_m_pid = isset( $id_map[ $orig_post_id ] ) ? $id_map[ $orig_post_id ] : $orig_post_id;
+			$m['post_id'] = $target_m_pid;
 
-			if ( $replacer && isset( $m['meta_value'] ) && is_string( $m['meta_value'] ) ) {
-				$m['meta_value'] = $replacer->replace( $m['meta_value'] );
+			$m_key = $m['meta_key'] ?? '';
+			$m_val = $m['meta_value'] ?? '';
+
+			// Remap attachment & post references in meta_value using $id_map
+			if ( ! empty( $id_map ) ) {
+				// A) Single ID meta fields (Featured image, etc.)
+				if ( in_array( $m_key, array( '_thumbnail_id', '_featured_image', '_menu_item_object_id' ), true ) ) {
+					$old_id = (int) $m_val;
+					if ( $old_id > 0 && isset( $id_map[ $old_id ] ) ) {
+						$m_val = (string) $id_map[ $old_id ];
+					}
+				}
+				// B) Comma-separated gallery meta fields (WooCommerce galleries & variation galleries)
+				elseif ( in_array( $m_key, array( '_product_image_gallery', '_wc_additional_variation_images', 'variation_image_gallery', 'rtwpvs_images' ), true ) ) {
+					if ( is_string( $m_val ) && '' !== trim( $m_val ) ) {
+						$parts = array_filter( array_map( 'trim', explode( ',', $m_val ) ) );
+						$remapped_parts = array();
+						foreach ( $parts as $p ) {
+							$p_int = (int) $p;
+							$remapped_parts[] = isset( $id_map[ $p_int ] ) ? $id_map[ $p_int ] : $p_int;
+						}
+						$m_val = implode( ',', $remapped_parts );
+					}
+				}
+				// C) Serialized/JSON structures containing "id": 123 (e.g. Elementor, ACF, Gutenberg attributes)
+				elseif ( is_string( $m_val ) && ( false !== strpos( $m_val, '"id":' ) || false !== strpos( $m_val, 'wp-image-' ) ) ) {
+					foreach ( $id_map as $old_id => $new_id ) {
+						if ( $old_id !== $new_id && $old_id > 0 ) {
+							$m_val = preg_replace( '/"id":\s*' . $old_id . '(?=[,\}\]])/', '"id":' . $new_id, $m_val );
+							$m_val = preg_replace( '/"id":\s*"' . $old_id . '"/', '"id":"' . $new_id . '"', $m_val );
+							$m_val = str_replace( 'wp-image-' . $old_id, 'wp-image-' . $new_id, $m_val );
+						}
+					}
+				}
 			}
+
+			// Safeguard: preserve remote live inventory if product already existed
+			if ( $preserve_stock && isset( $existing_stocks[ $target_m_pid ][ $m_key ] ) ) {
+				$m['meta_value'] = $existing_stocks[ $target_m_pid ][ $m_key ];
+			} elseif ( $replacer && is_string( $m_val ) ) {
+				$m['meta_value'] = $replacer->replace( $m_val );
+			} else {
+				$m['meta_value'] = $m_val;
+			}
+
 			$wpdb->insert( $wpdb->postmeta, $m );
 			$meta_count++;
+		}
+
+		// 3.1 Remap inline image block references and wp-image-ID in post_content if any ID was remapped
+		$has_remapped_ids = false;
+		foreach ( $id_map as $old_id => $new_id ) {
+			if ( $old_id !== $new_id ) {
+				$has_remapped_ids = true;
+				break;
+			}
+		}
+		if ( $has_remapped_ids && ! empty( $synced_ids ) ) {
+			foreach ( $synced_ids as $sid ) {
+				$cnt = $wpdb->get_var( $wpdb->prepare( "SELECT post_content FROM `{$wpdb->posts}` WHERE ID = %d", $sid ) );
+				if ( ! empty( $cnt ) ) {
+					$new_cnt = $cnt;
+					foreach ( $id_map as $old_id => $new_id ) {
+						if ( $old_id !== $new_id && $old_id > 0 ) {
+							if ( false !== strpos( $new_cnt, (string) $old_id ) ) {
+								$new_cnt = preg_replace( '/"id":\s*' . $old_id . '(?=[,\}\]])/', '"id":' . $new_id, $new_cnt );
+								$new_cnt = preg_replace( '/"mediaId":\s*' . $old_id . '(?=[,\}\]])/', '"mediaId":' . $new_id, $new_cnt );
+								$new_cnt = str_replace( 'wp-image-' . $old_id, 'wp-image-' . $new_id, $new_cnt );
+							}
+						}
+					}
+					if ( $new_cnt !== $cnt ) {
+						$wpdb->update( $wpdb->posts, array( 'post_content' => $new_cnt ), array( 'ID' => $sid ) );
+					}
+				}
+			}
 		}
 
 		// 4. Upsert term_relationships
@@ -767,6 +1044,47 @@ class VK7K_Sync_API {
 		}
 
 		$wpdb->query( 'SET FOREIGN_KEY_CHECKS=1;' );
+
+		// 5. Invalidate WooCommerce Caches & Update Product Meta Lookup tables
+		if ( ! function_exists( 'wc_update_product_lookup_tables' ) && defined( 'WC_ABSPATH' ) && file_exists( WC_ABSPATH . 'includes/wc-product-functions.php' ) ) {
+			include_once WC_ABSPATH . 'includes/wc-product-functions.php';
+		}
+		$lookup_updated = false;
+		foreach ( $synced_ids as $sid ) {
+			$ptype = get_post_type( $sid );
+			if ( in_array( $ptype, array( 'product', 'product_variation' ), true ) ) {
+				if ( function_exists( 'wc_delete_product_transients' ) ) {
+					wc_delete_product_transients( $sid );
+				}
+				if ( function_exists( 'wc_update_product_lookup_tables' ) ) {
+					wc_update_product_lookup_tables( $sid );
+					$lookup_updated = true;
+				}
+				clean_post_cache( $sid );
+			} elseif ( 'attachment' === $ptype ) {
+				clean_post_cache( $sid );
+				if ( function_exists( 'clean_attachment_cache' ) ) {
+					clean_attachment_cache( $sid );
+				}
+			} else {
+				clean_post_cache( $sid );
+			}
+		}
+
+		// Fallback direct update for wc_product_meta_lookup if WooCommerce function was not available
+		if ( ! $lookup_updated && ! empty( $wc_product_meta_lookup ) ) {
+			$lookup_table = "{$wpdb->prefix}wc_product_meta_lookup";
+			$has_table    = $wpdb->get_var( $wpdb->prepare( "SHOW TABLES LIKE %s", $lookup_table ) );
+			if ( $has_table ) {
+				foreach ( $wc_product_meta_lookup as $lr ) {
+					$orig_prod_id = (int) ( $lr['product_id'] ?? 0 );
+					$lr['product_id'] = isset( $id_map[ $orig_prod_id ] ) ? $id_map[ $orig_prod_id ] : $orig_prod_id;
+					$wpdb->replace( $lookup_table, $lr );
+				}
+			}
+		}
+
+		delete_transient( 'wc_attribute_taxonomies' );
 
 		wp_cache_flush();
 		if ( class_exists( '\Elementor\Plugin' ) && isset( \Elementor\Plugin::$instance->files_manager ) ) {
@@ -957,15 +1275,20 @@ class VK7K_Sync_API {
 		// Forward posts payload to handle_db_push_posts
 		$posts_synced = 0;
 		if ( ! empty( $package['posts'] ) ) {
-			$sub_request = new WP_REST_Request( 'POST', '/' . self::REST_NAMESPACE . '/db/push-posts' );
+			$preserve_stock = ! empty( $params['preserve_stock'] ) || ! empty( $package['preserve_stock'] );
+			$sub_request    = new WP_REST_Request( 'POST', '/' . self::REST_NAMESPACE . '/db/push-posts' );
 			$sub_request->set_header( 'content-type', 'application/json' );
 			$sub_request->set_body( wp_json_encode( array(
-				'source_url'         => $package['source_url'] ?? '',
-				'target_url'         => home_url(),
-				'posts'              => $package['posts'],
-				'postmeta'           => $package['postmeta'] ?? array(),
-				'term_relationships' => $package['term_relationships'] ?? array(),
-				'terms'              => $package['terms'] ?? array(),
+				'source_url'              => $package['source_url'] ?? '',
+				'target_url'              => home_url(),
+				'posts'                   => $package['posts'],
+				'postmeta'                => $package['postmeta'] ?? array(),
+				'term_relationships'      => $package['term_relationships'] ?? array(),
+				'terms'                   => $package['terms'] ?? array(),
+				'termmeta'                => $package['termmeta'] ?? array(),
+				'wc_attribute_taxonomies' => $package['wc_attribute_taxonomies'] ?? array(),
+				'wc_product_meta_lookup'  => $package['wc_product_meta_lookup'] ?? array(),
+				'preserve_stock'          => $preserve_stock,
 			) ) );
 			$res_posts = self::handle_db_push_posts( $sub_request );
 			if ( ! is_wp_error( $res_posts ) && isset( $res_posts->data['posts_synced'] ) ) {

@@ -130,10 +130,11 @@ Todas las rutas requieren autenticación HMAC con cabeceras `X-VK7K-Signature`, 
 
 Los endpoints AJAX están protegidos por `check_ajax_referer( 'vk7k_sync_admin_nonce' )` y chequeo de capacidades (`manage_options` o `edit_posts`):
 
-- **Editor Gutenberg / FSE:**
-  - `vk7k_sync_editor_inspect`: Inspecciona dependencias del post actual.
-  - `vk7k_sync_editor_push`: Envía el post actual + medios al remoto.
-  - `vk7k_sync_editor_pull`: Trae el post actual desde el remoto y descarga medios.
+- **Editor Gutenberg / FSE & Editor Clásico / WooCommerce:**
+  - `vk7k_sync_editor_inspect`: Inspecciona dependencias del post/producto actual (medios, variaciones, metadatos, SKU).
+  - `vk7k_sync_editor_push`: Envía el post/producto actual + medios + variaciones al remoto con preservación opcional de stock.
+  - `vk7k_sync_editor_pull`: Trae el post/producto actual desde el remoto, descarga medios y actualiza lookup tables locales.
+  - **Meta Box y Acciones de Fila**: Soporte nativo para la pantalla clásica de edición de WooCommerce (`product`) y listados (`edit.php?post_type=product`).
 - **DataGrid Granular:**
   - `vk7k_sync_granular_inspect`, `vk7k_sync_granular_query`, `vk7k_sync_granular_run`.
 - **Clonación Global:**

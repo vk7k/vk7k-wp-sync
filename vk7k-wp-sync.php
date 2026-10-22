@@ -3,7 +3,7 @@
  * Plugin Name: uxcribe.cl Sync
  * Plugin URI: https://uxcribe.cl
  * Description: Sincronización y clonación bidireccional (Push/Pull) de WordPress desarrollada por Uxcribe.cl. Sincroniza bases de datos complejas (WooCommerce, postmeta, options) con Search & Replace serializado recursivo y transferencia de archivos por lotes (Uploads, Temas, Plugins) vía REST API autenticada por HMAC.
- * Version: 1.6.8
+ * Version: 1.7.1
  * Author: Uxcribe.cl
  * Author URI: https://uxcribe.cl
  * License: GPLv2 or later
@@ -15,7 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // Define plugin constants
-define( 'VK7K_SYNC_VERSION', '1.6.8' );
+define( 'VK7K_SYNC_VERSION', '1.7.1' );
 define( 'VK7K_SYNC_FILE', __FILE__ );
 define( 'VK7K_SYNC_PATH', plugin_dir_path( __FILE__ ) );
 define( 'VK7K_SYNC_URL', plugin_dir_url( __FILE__ ) );
@@ -48,6 +48,13 @@ if ( is_admin() && file_exists( VK7K_SYNC_PATH . 'admin/class-vk7k-sync-admin.ph
 // Activation hook
 register_activation_hook( __FILE__, array( 'VK7K_Sync_Core', 'on_activation' ) );
 register_deactivation_hook( __FILE__, array( 'VK7K_Sync_Core', 'on_deactivation' ) );
+
+// Declare WooCommerce HPOS compatibility
+add_action( 'before_woocommerce_init', function() {
+	if ( class_exists( \Automattic\WooCommerce\Utilities\FeaturesUtil::class ) ) {
+		\Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'custom_order_tables', __FILE__, true );
+	}
+} );
 
 // Initialize plugin
 function vk7k_wp_sync_init() {

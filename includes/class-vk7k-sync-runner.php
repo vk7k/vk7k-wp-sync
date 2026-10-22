@@ -407,7 +407,10 @@ class VK7K_Sync_Runner {
 				'mode'       => 'push',
 				'components' => array( 'plugins' ),
 				'options'    => array(
-					'selected_plugins' => array( $plugin_slug ),
+					'selected_plugins'  => array( $plugin_slug ),
+					// Deploying this very plugin is an explicit operation: let its own files
+					// through the blacklist (which otherwise blocks them everywhere).
+					'allow_self_plugin' => ( $plugin_slug === dirname( VK7K_SYNC_BASENAME ) || 'vk7k-wp-sync' === $plugin_slug ),
 				),
 				'remote_url' => $remote_url,
 				'secret_key' => $secret_key,

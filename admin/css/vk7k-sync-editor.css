@@ -166,6 +166,58 @@
 	transform: translateY(-1px);
 }
 
+/* Unified alert card: danger tone (lost connection) */
+.vk7k-sync-remote-alert.is-danger {
+	background: #fef2f2;
+	border-color: #fecaca;
+	border-left-color: #dc2626;
+}
+
+.vk7k-sync-remote-alert.is-danger .vk7k-sync-remote-alert-head {
+	color: #991b1b;
+}
+
+.vk7k-sync-remote-alert.is-danger .vk7k-sync-remote-alert-msg {
+	color: #7f1d1d;
+}
+
+/* Action row inside the alert card */
+.vk7k-sync-alert-actions {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.vk7k-sync-alert-actions .vk7k-sync-btn-deploy.components-button,
+.vk7k-sync-alert-actions .vk7k-sync-btn-retry.components-button {
+	width: 100%;
+	justify-content: center;
+	font-weight: 600;
+	font-size: 12px;
+}
+
+.vk7k-sync-alert-actions .vk7k-sync-btn-deploy.components-button {
+	background: #d97706;
+	border-color: #b45309;
+	color: #ffffff;
+}
+
+.vk7k-sync-alert-actions .vk7k-sync-btn-deploy.components-button:hover:not(:disabled) {
+	background: #b45309;
+	color: #ffffff;
+}
+
+.vk7k-sync-alert-actions .vk7k-sync-btn-retry.components-button {
+	background: #ffffff;
+	border: 1px solid #f59e0b;
+	color: #92400e;
+}
+
+.vk7k-sync-alert-actions .vk7k-sync-btn-retry.components-button:hover:not(:disabled) {
+	background: #fef3c7;
+	color: #78350f;
+}
+
 /* Content Details Card */
 .vk7k-sync-card {
 	background: #ffffff;
@@ -340,6 +392,21 @@
 	background: #fef2f2;
 	border: 1px solid #fecaca;
 	color: #991b1b;
+}
+
+.vk7k-sync-status-box.is-warning {
+	background: #fffbeb;
+	border: 1px solid #fde68a;
+	color: #92400e;
+}
+
+.vk7k-sync-status-box.is-info {
+	background: #eff6ff;
+	border: 1px solid #bfdbfe;
+	color: #1e40af;
+	display: flex;
+	align-items: center;
+	gap: 10px;
 }
 
 .vk7k-sync-btn-remote-view {
