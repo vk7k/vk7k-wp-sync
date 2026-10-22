@@ -60,6 +60,7 @@ class VK7K_Sync_Core {
 		add_action( 'wp_ajax_vk7k_sync_backup_db', array( $this, 'ajax_backup_db' ) );
 		add_action( 'wp_ajax_vk7k_sync_restore_db', array( $this, 'ajax_restore_db' ) );
 		add_action( 'wp_ajax_vk7k_sync_regenerate_key', array( $this, 'ajax_regenerate_key' ) );
+		add_action( 'wp_ajax_vk7k_sync_rotate_key', array( $this, 'ajax_rotate_key' ) );
 
 		// PIN Vault actions
 		add_action( 'wp_ajax_vk7k_sync_setup_pin', array( $this, 'ajax_setup_pin' ) );
@@ -562,6 +563,28 @@ class VK7K_Sync_Core {
 	/**
 	 * AJAX: Regenerate Key.
 	 */
+	/**
+	 * AJAX: Rotate the local secret key now (previous key stays valid during grace).
+	 */
+	public function ajax_rotate_key() {
+		$this->check_ajax_permissions();
+
+		if ( defined( 'VK7K_SYNC_LOCAL_KEY' ) && ! empty( VK7K_SYNC_LOCAL_KEY ) ) {
+			wp_send_json_error( array( 'message' => 'La clave está fijada en wp-config.php (VK7K_SYNC_LOCAL_KEY) y no se puede rotar desde el panel.' ) );
+		}
+
+		VK7K_Sync_Auth::rotate_local_secret_key( 'manual' );
+		$meta = VK7K_Sync_Auth::get_key_meta();
+
+		wp_send_json_success( array(
+			'message'  => sprintf(
+				'Clave local rotada. La clave anterior sigue siendo válida hasta el %s (UTC) para que el sitio remoto adopte la nueva sin cortar la sincronización.',
+				$meta['prev_expires_iso']
+			),
+			'key_meta' => $meta,
+		) );
+	}
+
 	public function ajax_regenerate_key() {
 		$this->check_ajax_permissions();
 		$new_key = VK7K_Sync_Auth::regenerate_local_secret_key();
@@ -1309,6 +1332,20 @@ class VK7K_Sync_Core {
 		$remote_status['remote_version_disk'] = $test['plugin_version_disk'] ?? '';
 		$remote_status['remote_site']         = $test['site_name'] ?? $remote_url;
 		$remote_status['remote_wp']           = $test['wp_version'] ?? '';
+
+		// Key lifecycle: pick up a key the remote rotated, and mirror its TTL state for the UI.
+		if ( ! empty( $test['key_current'] ) && VK7K_Sync_Auth::adopt_remote_secret_key( $test['key_current'] ) ) {
+			$remote_status['key_rotated'] = true;
+		}
+		if ( ! empty( $test['key_meta'] ) && is_array( $test['key_meta'] ) ) {
+			$remote_status['peer_key_meta'] = array(
+				'ttl_days'        => (int) ( $test['key_meta']['ttl_days'] ?? 0 ),
+				'grace_days'      => (int) ( $test['key_meta']['grace_days'] ?? 0 ),
+				'due_at_iso'      => (string) ( $test['key_meta']['due_at_iso'] ?? '' ),
+				'expires_in_days' => (int) ( $test['key_meta']['expires_in_days'] ?? 0 ),
+				'needs_rotation'  => ! empty( $test['key_meta']['needs_rotation'] ),
+			);
+		}
 
 		$version_diff = version_compare( $remote_status['remote_version'], VK7K_SYNC_VERSION );
 

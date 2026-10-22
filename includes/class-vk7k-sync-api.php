@@ -480,6 +480,10 @@ class VK7K_Sync_API {
 			'php_version'              => phpversion(),
 			'plugin_version'           => defined( 'VK7K_SYNC_VERSION' ) ? VK7K_SYNC_VERSION : '1.0.0',
 			'plugin_version_disk'      => self::get_disk_plugin_version(),
+			// The caller is already HMAC-authenticated (fully trusted): advertising the current
+			// key is how a peer picks up a rotation. The previous key stays valid during grace.
+			'key_current'              => VK7K_Sync_Auth::get_local_secret_key(),
+			'key_meta'                 => VK7K_Sync_Auth::get_key_meta(),
 			'db_prefix'                => $wpdb->prefix,
 			'max_upload_size'          => $upload_max_bytes,
 			'post_max_size'            => $post_max_bytes,

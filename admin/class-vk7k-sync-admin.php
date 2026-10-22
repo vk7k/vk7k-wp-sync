@@ -548,6 +548,7 @@ class VK7K_Sync_Admin {
 		$total_size        = round( array_sum( array_column( $db_tables, 'size_mb' ) ), 2 );
 		$plugins           = VK7K_Sync_Files::get_available_plugins();
 		$themes            = VK7K_Sync_Files::get_available_themes();
+		$key_meta          = VK7K_Sync_Auth::get_key_meta();
 
 		$has_ssh2 = function_exists( 'ssh2_connect' );
 		?>
@@ -827,6 +828,39 @@ class VK7K_Sync_Admin {
 									<input type="password" id="vk7k-remote-key" name="remote_secret_key" value="" autocomplete="new-password" placeholder="<?php echo ! empty( $settings['remote_secret_key'] ) ? esc_attr__( '•••••••• clave guardada — deja vacío para conservarla', 'vk7k-wp-sync' ) : esc_attr__( 'Pega aquí la clave secreta del servidor remoto', 'vk7k-wp-sync' ); ?>" class="vk7k-input vk7k-code" />
 									<?php if ( ! empty( $settings['remote_secret_key'] ) ) : ?>
 										<p class="description"><?php esc_html_e( 'Por seguridad la clave no se muestra. Escríbela solo si deseas reemplazarla.', 'vk7k-wp-sync' ); ?></p>
+									<?php endif; ?>
+								</div>
+
+								<div class="vk7k-form-group vk7k-key-lifecycle" id="vk7k-key-lifecycle">
+									<label><strong><?php esc_html_e( 'Rotación automática de claves', 'vk7k-wp-sync' ); ?></strong></label>
+									<p class="description" id="vk7k-key-lifecycle-text">
+										<?php
+										printf(
+											/* translators: 1: creation date, 2: TTL days, 3: next rotation date, 4: grace days */
+											esc_html__( 'Clave local creada el %1$s (UTC). Se rota sola cada %2$d días — próxima rotación: %3$s (UTC). La clave anterior se sigue aceptando %4$d días para que el otro sitio adopte la nueva sin cortar la sincronización.', 'vk7k-wp-sync' ),
+											esc_html( $key_meta['created_iso'] ),
+											(int) $key_meta['ttl_days'],
+											esc_html( $key_meta['due_at_iso'] ),
+											(int) $key_meta['grace_days']
+										);
+										?>
+									</p>
+									<p class="description" id="vk7k-key-lifecycle-prev" style="<?php echo $key_meta['prev_active'] ? '' : 'display:none;'; ?>">
+										<?php
+										printf(
+											/* translators: %s: expiry date */
+											esc_html__( 'La clave anterior sigue aceptándose hasta el %s (UTC).', 'vk7k-wp-sync' ),
+											esc_html( $key_meta['prev_expires_iso'] )
+										);
+										?>
+									</p>
+									<?php if ( ! empty( $key_meta['pinned_by_constant'] ) ) : ?>
+										<p class="description"><em><?php esc_html_e( 'La clave está fijada en wp-config.php (VK7K_SYNC_LOCAL_KEY): no se rota automáticamente.', 'vk7k-wp-sync' ); ?></em></p>
+									<?php else : ?>
+										<button type="button" class="button button-secondary" id="vk7k-btn-rotate-key">
+											<span class="dashicons dashicons-image-rotate" style="margin-top:3px;"></span>
+											<?php esc_html_e( 'Rotar clave ahora', 'vk7k-wp-sync' ); ?>
+										</button>
 									<?php endif; ?>
 								</div>
 							</div>

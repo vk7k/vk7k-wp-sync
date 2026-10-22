@@ -15,6 +15,15 @@ class VK7K_Sync_Auth {
 	const TARGETS_OPTION_KEY     = 'vk7k_sync_targets';
 	const PIN_VAULT_OPTION_KEY   = 'vk7k_sync_pin_vault';
 	const NONCE_TRANSIENT_PREFIX = 'vk7k_nonce_';
+
+	/**
+	 * Key lifecycle defaults (days).
+	 * Override with VK7K_SYNC_KEY_TTL_DAYS / VK7K_SYNC_KEY_GRACE_DAYS in wp-config.php
+	 * or with `wp vk7k-sync key --ttl=90 --grace=14`.
+	 */
+	const DEFAULT_KEY_TTL_DAYS   = 90;
+	const DEFAULT_KEY_GRACE_DAYS = 14;
+	const MIN_KEY_TTL_DAYS       = 7;
 	const UNLOCK_TRANSIENT_KEY   = 'vk7k_vault_unlocked_session';
 
 	/**
@@ -143,6 +152,18 @@ class VK7K_Sync_Auth {
 		$remote_url = ! empty( $settings['remote_url'] ) ? $settings['remote_url'] : ( $existing['remote_url'] ?? '' );
 		$role       = ! empty( $settings['role'] ) ? $settings['role'] : ( $existing['role'] ?? 'master' );
 
+		$prev_local_key  = ! empty( $settings['local_secret_key_prev'] ) ? $settings['local_secret_key_prev'] : ( $existing['local_secret_key_prev'] ?? '' );
+		$prev_remote_key = ! empty( $settings['remote_secret_key_prev'] ) ? $settings['remote_secret_key_prev'] : ( $existing['remote_secret_key_prev'] ?? '' );
+		$lifecycle       = array(
+			'local_secret_key_created'       => (int) ( $settings['local_secret_key_created'] ?? ( $existing['local_secret_key_created'] ?? 0 ) ),
+			'local_secret_key_prev_expires'  => (int) ( $settings['local_secret_key_prev_expires'] ?? ( $existing['local_secret_key_prev_expires'] ?? 0 ) ),
+			'remote_secret_key_prev_expires' => (int) ( $settings['remote_secret_key_prev_expires'] ?? ( $existing['remote_secret_key_prev_expires'] ?? 0 ) ),
+			'key_ttl_days'                   => (int) ( $settings['key_ttl_days'] ?? ( $existing['key_ttl_days'] ?? self::DEFAULT_KEY_TTL_DAYS ) ),
+			'key_grace_days'                 => (int) ( $settings['key_grace_days'] ?? ( $existing['key_grace_days'] ?? self::DEFAULT_KEY_GRACE_DAYS ) ),
+			'last_key_rotation'              => (string) ( $settings['last_key_rotation'] ?? ( $existing['last_key_rotation'] ?? '' ) ),
+			'last_key_rotation_reason'       => (string) ( $settings['last_key_rotation_reason'] ?? ( $existing['last_key_rotation_reason'] ?? '' ) ),
+		);
+
 		if ( empty( $local_key ) && empty( $remote_key ) ) {
 			$is_saving = false;
 			return false; // Prevent wiping valid vault with empty data
@@ -150,12 +171,14 @@ class VK7K_Sync_Auth {
 
 		// Encrypt credentials before persisting to disk
 		$vault_data = array(
-			'local_secret_key'  => ! empty( $local_key ) ? self::encrypt_vault_secret( $local_key ) : '',
-			'remote_secret_key' => ! empty( $remote_key ) ? self::encrypt_vault_secret( $remote_key ) : '',
-			'remote_url'        => $remote_url,
-			'role'              => $role,
-			'updated_at'        => time(),
-		);
+			'local_secret_key'       => ! empty( $local_key ) ? self::encrypt_vault_secret( $local_key ) : '',
+			'remote_secret_key'      => ! empty( $remote_key ) ? self::encrypt_vault_secret( $remote_key ) : '',
+			'local_secret_key_prev'  => ! empty( $prev_local_key ) ? self::encrypt_vault_secret( $prev_local_key ) : '',
+			'remote_secret_key_prev' => ! empty( $prev_remote_key ) ? self::encrypt_vault_secret( $prev_remote_key ) : '',
+			'remote_url'             => $remote_url,
+			'role'                   => $role,
+			'updated_at'             => time(),
+		) + $lifecycle;
 
 		// Format as self-protected PHP file (stops direct web disclosure)
 		$php_content = "<?php\n" .
@@ -219,6 +242,12 @@ class VK7K_Sync_Auth {
 					}
 					if ( ! empty( $data['remote_secret_key'] ) ) {
 						$data['remote_secret_key'] = self::decrypt_vault_secret( $data['remote_secret_key'] );
+					}
+					if ( ! empty( $data['local_secret_key_prev'] ) ) {
+						$data['local_secret_key_prev'] = self::decrypt_vault_secret( $data['local_secret_key_prev'] );
+					}
+					if ( ! empty( $data['remote_secret_key_prev'] ) ) {
+						$data['remote_secret_key_prev'] = self::decrypt_vault_secret( $data['remote_secret_key_prev'] );
 					}
 
 					// If legacy unencrypted .json vault was read, migrate to secured .php vault immediately
@@ -821,6 +850,174 @@ class VK7K_Sync_Auth {
 	}
 
 	/**
+	 * Resolve the key policy (TTL + grace) in days.
+	 *
+	 * @param array|null $settings Optional settings array.
+	 * @return array{0:int,1:int} TTL and grace in days.
+	 */
+	public static function get_key_policy( $settings = null ) {
+		$settings = is_array( $settings ) ? $settings : self::get_settings();
+
+		$ttl   = defined( 'VK7K_SYNC_KEY_TTL_DAYS' ) ? (int) VK7K_SYNC_KEY_TTL_DAYS : (int) ( $settings['key_ttl_days'] ?? self::DEFAULT_KEY_TTL_DAYS );
+		$grace = defined( 'VK7K_SYNC_KEY_GRACE_DAYS' ) ? (int) VK7K_SYNC_KEY_GRACE_DAYS : (int) ( $settings['key_grace_days'] ?? self::DEFAULT_KEY_GRACE_DAYS );
+
+		$ttl = max( self::MIN_KEY_TTL_DAYS, min( 365, $ttl ) );
+		// Grace can never outlive half of the TTL: the old key must die before the current one rotates again.
+		$grace = max( 1, min( (int) floor( $ttl / 2 ), $grace ) );
+
+		return array( $ttl, $grace );
+	}
+
+	/**
+	 * Persist the key policy.
+	 *
+	 * @param int $ttl_days   Days a key stays valid before rotation.
+	 * @param int $grace_days Days the previous key keeps working after rotation.
+	 * @return array{touch_ttl:int,grace_days:int}
+	 */
+	public static function save_key_policy( $ttl_days, $grace_days = self::DEFAULT_KEY_GRACE_DAYS ) {
+		$settings = self::get_settings();
+
+		$settings['key_ttl_days']   = max( self::MIN_KEY_TTL_DAYS, min( 365, (int) $ttl_days ) );
+		$settings['key_grace_days'] = max( 1, (int) $grace_days );
+
+		self::save_settings( $settings );
+
+		list( $ttl, $grace ) = self::get_key_policy();
+
+		return array( 'ttl_days' => $ttl, 'grace_days' => $grace );
+	}
+
+	/**
+	 * Key lifecycle metadata for the local secret key.
+	 *
+	 * Legacy installs have no creation timestamp: it is stamped now (no forced
+	 * rotation on upgrade) and persisted, so the window starts counting from here.
+	 *
+	 * @return array
+	 */
+	public static function get_key_meta() {
+		$settings = self::get_settings();
+		list( $ttl, $grace ) = self::get_key_policy( $settings );
+
+		$created = (int) ( $settings['local_secret_key_created'] ?? 0 );
+		if ( $created <= 0 ) {
+			$created = time();
+			$settings['local_secret_key_created'] = $created;
+			self::save_settings( $settings );
+		}
+
+		$due_at       = $created + $ttl * DAY_IN_SECONDS;
+		$prev_expires = (int) ( $settings['local_secret_key_prev_expires'] ?? 0 );
+		$remote_prev  = (int) ( $settings['remote_secret_key_prev_expires'] ?? 0 );
+
+		return array(
+			'ttl_days'            => $ttl,
+			'grace_days'          => $grace,
+			'created'             => $created,
+			'created_iso'         => gmdate( 'Y-m-d H:i:s', $created ),
+			'due_at'              => $due_at,
+			'due_at_iso'          => gmdate( 'Y-m-d H:i:s', $due_at ),
+			'expires_in_days'     => (int) ceil( ( $due_at - time() ) / DAY_IN_SECONDS ),
+			'needs_rotation'      => ( time() >= $due_at ),
+			'prev_active'         => ( $prev_expires > time() ),
+			'prev_expires'        => $prev_expires,
+			'prev_expires_iso'    => $prev_expires ? gmdate( 'Y-m-d H:i:s', $prev_expires ) : '',
+			'peer_prev_active'    => ( $remote_prev > time() ),
+			'pinned_by_constant'  => defined( 'VK7K_SYNC_LOCAL_KEY' ) && ! empty( VK7K_SYNC_LOCAL_KEY ),
+		);
+	}
+
+	/**
+	 * Rotate the local secret key, keeping the old one valid for the grace window.
+	 *
+	 * The peer picks the new key up on its next authenticated call (auth/test
+	 * advertises it) and keeps using the old one meanwhile.
+	 *
+	 * @param string $reason Short audit reason (manual, ttl_expired, ...).
+	 * @return string The new key.
+	 */
+	public static function rotate_local_secret_key( $reason = 'manual' ) {
+		$settings = self::get_settings();
+		list( $ttl, $grace ) = self::get_key_policy( $settings );
+
+		$old_key = ! empty( $settings['local_secret_key'] ) ? (string) $settings['local_secret_key'] : self::get_local_secret_key();
+		$new_key = wp_generate_password( 64, false, false );
+
+		if ( ! empty( $old_key ) ) {
+			$settings['local_secret_key_prev']         = $old_key;
+			$settings['local_secret_key_prev_expires'] = time() + $grace * DAY_IN_SECONDS;
+		}
+
+		$settings['local_secret_key']         = $new_key;
+		$settings['local_secret_key_created'] = time();
+		$settings['last_key_rotation']        = gmdate( 'Y-m-d H:i:s' );
+		$settings['last_key_rotation_reason'] = sanitize_key( $reason );
+		$settings['key_ttl_days']             = $ttl;
+		$settings['key_grace_days']           = $grace;
+
+		self::save_settings( $settings );
+
+		return $new_key;
+	}
+
+	/**
+	 * Rotate automatically when the current key exceeded its TTL.
+	 *
+	 * @return bool True when a rotation happened.
+	 */
+	public static function maybe_rotate_local_secret_key() {
+		// A key pinned in wp-config.php is managed by the operator, never auto-rotated.
+		if ( defined( 'VK7K_SYNC_LOCAL_KEY' ) && ! empty( VK7K_SYNC_LOCAL_KEY ) ) {
+			return false;
+		}
+
+		$meta = self::get_key_meta();
+		if ( empty( $meta['needs_rotation'] ) ) {
+			return false;
+		}
+
+		self::rotate_local_secret_key( 'ttl_expired' );
+		update_option( 'vk7k_sync_last_key_rotation_event', gmdate( 'Y-m-d H:i:s' ) );
+
+		return true;
+	}
+
+	/**
+	 * Store the peer's current key after it rotates (keeps the old one for the grace window).
+	 *
+	 * @param string $new_key Key advertised by the remote.
+	 * @return bool True when the stored key changed.
+	 */
+	public static function adopt_remote_secret_key( $new_key ) {
+		$new_key = is_string( $new_key ) ? trim( $new_key ) : '';
+		if ( strlen( $new_key ) < 32 ) {
+			return false;
+		}
+
+		$settings = self::get_settings();
+		$current  = (string) ( $settings['remote_secret_key'] ?? '' );
+
+		if ( ! empty( $current ) && hash_equals( $current, $new_key ) ) {
+			return false;
+		}
+
+		list( $ttl, $grace ) = self::get_key_policy( $settings );
+
+		if ( ! empty( $current ) ) {
+			$settings['remote_secret_key_prev']         = $current;
+			$settings['remote_secret_key_prev_expires'] = time() + $grace * DAY_IN_SECONDS;
+		}
+
+		$settings['remote_secret_key'] = $new_key;
+		$settings['last_key_adopted']  = gmdate( 'Y-m-d H:i:s' );
+
+		self::save_settings( $settings );
+
+		return true;
+	}
+
+	/**
 	 * Get all plugin settings with defaults.
 	 *
 	 * @return array
@@ -847,6 +1044,17 @@ class VK7K_Sync_Auth {
 			'zip_chunk_mb'       => 8,
 			'last_sync_time'     => '',
 			'last_sync_status'   => '',
+			// Key lifecycle (rotation) — see get_key_meta().
+			'local_secret_key_prev'           => '',
+			'local_secret_key_prev_expires'   => 0,
+			'local_secret_key_created'        => 0,
+			'remote_secret_key_prev'          => '',
+			'remote_secret_key_prev_expires'  => 0,
+			'key_ttl_days'                    => self::DEFAULT_KEY_TTL_DAYS,
+			'key_grace_days'                  => self::DEFAULT_KEY_GRACE_DAYS,
+			'last_key_rotation'               => '',
+			'last_key_rotation_reason'        => '',
+			'last_key_adopted'                => '',
 		);
 
 		$saved = get_option( self::OPTION_KEY, array() );
@@ -876,6 +1084,12 @@ class VK7K_Sync_Auth {
 		if ( ! empty( $saved['remote_secret_key'] ) ) {
 			$saved['remote_secret_key'] = self::decrypt( $saved['remote_secret_key'] );
 		}
+		if ( ! empty( $saved['remote_secret_key_prev'] ) ) {
+			$saved['remote_secret_key_prev'] = self::decrypt( $saved['remote_secret_key_prev'] );
+		}
+		if ( ! empty( $saved['local_secret_key_prev'] ) ) {
+			$saved['local_secret_key_prev'] = self::decrypt( $saved['local_secret_key_prev'] );
+		}
 		if ( defined( 'VK7K_SYNC_REMOTE_KEY' ) && ! empty( VK7K_SYNC_REMOTE_KEY ) ) {
 			$saved['remote_secret_key'] = (string) VK7K_SYNC_REMOTE_KEY;
 		}
@@ -899,6 +1113,12 @@ class VK7K_Sync_Auth {
 		}
 		if ( ! empty( $to_save['remote_secret_key'] ) ) {
 			$to_save['remote_secret_key'] = self::encrypt( $to_save['remote_secret_key'] );
+		}
+		if ( ! empty( $to_save['remote_secret_key_prev'] ) ) {
+			$to_save['remote_secret_key_prev'] = self::encrypt( $to_save['remote_secret_key_prev'] );
+		}
+		if ( ! empty( $to_save['local_secret_key_prev'] ) ) {
+			$to_save['local_secret_key_prev'] = self::encrypt( $to_save['local_secret_key_prev'] );
 		}
 
 		return update_option( self::OPTION_KEY, $to_save );
@@ -1011,6 +1231,19 @@ class VK7K_Sync_Auth {
 			$candidate_keys[] = $vault['remote_secret_key'];
 		}
 
+		// Grace window: the previous local key (this site rotated) and the previous peer key
+		// (the peer rotated and we already adopted the new one) still authenticate.
+		$now = time();
+		if ( ! empty( $settings['local_secret_key_prev'] ) && (int) ( $settings['local_secret_key_prev_expires'] ?? 0 ) > $now ) {
+			$candidate_keys[] = $settings['local_secret_key_prev'];
+		}
+		if ( ! empty( $vault['local_secret_key_prev'] ) && (int) ( $vault['local_secret_key_prev_expires'] ?? 0 ) > $now ) {
+			$candidate_keys[] = $vault['local_secret_key_prev'];
+		}
+		if ( ! empty( $settings['remote_secret_key_prev'] ) && (int) ( $settings['remote_secret_key_prev_expires'] ?? 0 ) > $now ) {
+			$candidate_keys[] = $settings['remote_secret_key_prev'];
+		}
+
 		$candidate_keys = array_unique( array_filter( $candidate_keys ) );
 		$valid = false;
 
@@ -1023,12 +1256,20 @@ class VK7K_Sync_Auth {
 		}
 
 		if ( ! $valid ) {
+			// Visibility for key-lifecycle problems: an expired grace window looks like a plain mismatch.
+			do_action( 'vk7k_sync_auth_failed', $action, $_SERVER['REMOTE_ADDR'] ?? '' );
+
 			return new WP_Error(
 				'vk7k_auth_invalid_signature',
-				__( 'Firma HMAC inválida. Las claves secretas no coinciden.', 'vk7k-wp-sync' ),
+				__( 'Firma HMAC inválida. Las claves secretas no coinciden (puede que la clave anterior haya vencido su plazo de gracia: vuelve a parear el entorno).', 'vk7k-wp-sync' ),
 				array( 'status' => 403 )
 			);
 		}
+
+		// Authenticated peer: this site may rotate its own key on schedule.
+		// The rotation happens AFTER the signature check, so the current request stays valid
+		// and the new key is advertised to the peer on its next call.
+		self::maybe_rotate_local_secret_key();
 
 		// If authenticated and DB was missing settings, auto-heal DB options
 		$db_settings = get_option( self::OPTION_KEY );

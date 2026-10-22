@@ -15,6 +15,7 @@
  *   wp vk7k-sync push-options <prefix_or_keys> [--prefix]
  *   wp vk7k-sync push-fse
  *   wp vk7k-sync finalize
+ *   wp vk7k-sync key [--ttl=<days>] [--grace=<days>] [--rotate]
  *
  * Usage via Direct PHP CLI:
  *   php wp-content/plugins/vk7k-wp-sync/includes/class-vk7k-sync-cli.php <command> [args...]
@@ -216,6 +217,50 @@ class VK7K_Sync_CLI {
 	}
 
 	/**
+	 * Show (or change) the key rotation policy and rotate the local key on demand.
+	 *
+	 * ## OPTIONS
+	 *
+	 * [--ttl=<days>]
+	 * : Days the current key stays valid before auto-rotation (min 7, default 90).
+	 *
+	 * [--grace=<days>]
+	 * : Days the previous key keeps authenticating after rotation (default 14).
+	 *
+	 * [--rotate]
+	 * : Rotate the local key right now.
+	 *
+	 * ## EXAMPLES
+	 *
+	 *     wp vk7k-sync key
+	 *     wp vk7k-sync key --ttl=60 --grace=10
+	 *     wp vk7k-sync key --rotate
+	 */
+	public function key( $args = array(), $assoc_args = array() ) {
+		$changed = array();
+
+		if ( isset( $assoc_args['ttl'] ) || isset( $assoc_args['grace'] ) ) {
+			$policy = VK7K_Sync_Auth::save_key_policy(
+				(int) ( $assoc_args['ttl'] ?? VK7K_Sync_Auth::DEFAULT_KEY_TTL_DAYS ),
+				(int) ( $assoc_args['grace'] ?? VK7K_Sync_Auth::DEFAULT_KEY_GRACE_DAYS )
+			);
+			$changed['policy'] = $policy;
+		}
+
+		if ( ! empty( $assoc_args['rotate'] ) ) {
+			VK7K_Sync_Auth::rotate_local_secret_key( 'manual_cli' );
+			$changed['rotated'] = true;
+		}
+
+		$out = VK7K_Sync_Auth::get_key_meta();
+		if ( ! empty( $changed ) ) {
+			$out['changes'] = $changed;
+		}
+
+		self::output( $out );
+	}
+
+	/**
 	 * Direct PHP CLI runner when invoked outside WP-CLI.
 	 *
 	 * @param array $argv
@@ -261,6 +306,7 @@ class VK7K_Sync_CLI {
 						'push-options <prefix_or_keys> [--prefix]',
 						'push-fse',
 						'finalize',
+						'key [--ttl=<days>] [--grace=<days>] [--rotate]',
 					),
 				)
 			);

@@ -764,6 +764,46 @@
 			runTestConnectionFlow(false);
 		});
 
+		$(document).on('click', '#vk7k-btn-rotate-key', async function(e) {
+			e.preventDefault();
+			const $btn = $(this);
+			if ($btn.prop('disabled')) {
+				return;
+			}
+			if (!window.confirm('¿Rotar la clave de acceso ahora? La clave anterior seguirá funcionando durante el plazo de gracia para que el sitio remoto adopte la nueva.')) {
+				return;
+			}
+			$btn.prop('disabled', true).html('<span class="dashicons dashicons-update vk7k-spin"></span> Rotando...');
+			try {
+				const res = await $.ajax({
+					url: vk7kSyncData.ajaxUrl,
+					type: 'POST',
+					data: {
+						action: 'vk7k_sync_rotate_key',
+						nonce: vk7kSyncData.nonce
+					}
+				});
+				if (res && res.success) {
+					const m = (res.data && res.data.key_meta) || {};
+					showConnectionAlert('success', `<strong>✓ Clave rotada:</strong> ${res.data.message}`);
+					if (m.due_at_iso) {
+						$('#vk7k-key-lifecycle-text').text(
+							`Clave local creada el ${m.created_iso} (UTC). Se rota sola cada ${m.ttl_days} días — próxima rotación: ${m.due_at_iso} (UTC). La clave anterior se sigue aceptando ${m.grace_days} días.`
+						);
+					}
+					if (m.prev_expires_iso) {
+						$('#vk7k-key-lifecycle-prev').text(`La clave anterior sigue aceptándose hasta el ${m.prev_expires_iso} (UTC).`).show();
+					}
+				} else {
+					showConnectionAlert('error', `<strong>⚠️ Error:</strong> ${getErrorMessage(res)}`);
+				}
+			} catch (err) {
+				showConnectionAlert('error', `<strong>⚠️ Error:</strong> ${getErrorMessage(err)}`);
+			} finally {
+				$btn.prop('disabled', false).html('<span class="dashicons dashicons-image-rotate"></span> Rotar clave ahora');
+			}
+		});
+
 		$(document).on('click', '.vk7k-manual-deploy-btn', async function(e) {
 			e.preventDefault();
 			const $dBtn = $(this);
