@@ -181,6 +181,21 @@
 	color: #7f1d1d;
 }
 
+/* Unified alert card: informational tone (receptor mode) */
+.vk7k-sync-remote-alert.is-info {
+	background: #eff6ff;
+	border-color: #bfdbfe;
+	border-left-color: #3b82f6;
+}
+
+.vk7k-sync-remote-alert.is-info .vk7k-sync-remote-alert-head {
+	color: #1e40af;
+}
+
+.vk7k-sync-remote-alert.is-info .vk7k-sync-remote-alert-msg {
+	color: #1e3a8a;
+}
+
 /* Action row inside the alert card */
 .vk7k-sync-alert-actions {
 	display: flex;

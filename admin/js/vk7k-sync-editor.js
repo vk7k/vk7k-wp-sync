@@ -449,7 +449,9 @@
 
 		// A version mismatch blocks Push (never write with mismatched code) but keeps Pull available,
 		// because pulling does not modify the remote. A lost connection blocks both.
-		const isPushBlocked     = isBusy || ! isConfigured || isVersionMismatch || isDisconnected;
+		const isSlave           = 'slave' === config.role;
+		// A receptor never pushes (the server blocks it too).
+		const isPushBlocked     = isSlave || isBusy || ! isConfigured || isVersionMismatch || isDisconnected;
 		const isPullBlocked     = isBusy || ! isConfigured || isDisconnected;
 		const areOptionsBlocked = isBusy || ! isConfigured;
 
@@ -530,6 +532,25 @@
 			let title   = '';
 			let message = '';
 			let actions = [];
+
+			if ( ! isConfigured && isSlave ) {
+				// One-way trust: a receptor needs no credentials and must not look "misconfigured".
+				return el(
+					'div',
+					{ className: 'vk7k-sync-remote-alert is-info' },
+					el(
+						'div',
+						{ className: 'vk7k-sync-remote-alert-head' },
+						el( 'span', {}, '📥' ),
+						el( 'strong', {}, 'Sitio receptor de sincronización' )
+					),
+					el(
+						'p',
+						{ className: 'vk7k-sync-remote-alert-msg' },
+						'Este sitio recibe contenido desde el maestro. No inicia peticiones ni guarda claves de otros entornos.'
+					)
+				);
+			}
 
 			if ( ! isConfigured ) {
 				title   = 'Servidor Remoto no Configurado';

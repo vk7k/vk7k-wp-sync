@@ -217,6 +217,7 @@ class VK7K_Sync_Admin {
 				'pluginVersion' => VK7K_SYNC_VERSION,
 				'localVersion'  => VK7K_SYNC_VERSION,
 				'canUpdatePlugin' => current_user_can( 'manage_options' ),
+				'role'            => $current_role,
 				'post'          => $current_post_data,
 				'i18n'         => array(
 					'pluginTitle'       => __( 'uxcribe.cl Sync', 'vk7k-wp-sync' ),
@@ -408,12 +409,18 @@ class VK7K_Sync_Admin {
 			</div>
 
 			<?php if ( ! $is_configured ) : ?>
-				<div class="vk7k-mb-notice vk7k-mb-notice-warn">
-					<?php esc_html_e( 'Debes vincular un entorno remoto en los ajustes de uxcribe.cl Sync para sincronizar.', 'vk7k-wp-sync' ); ?><br/>
-					<a href="<?php echo esc_url( admin_url( 'admin.php?page=uxcribe-sync' ) ); ?>" class="button button-small" style="margin-top: 6px;">
-						<?php esc_html_e( 'Configurar Sync', 'vk7k-wp-sync' ); ?>
-					</a>
-				</div>
+				<?php if ( 'slave' === $current_role ) : ?>
+					<div class="vk7k-mb-notice vk7k-mb-notice-warn">
+						📥 <?php esc_html_e( 'Este sitio es el receptor de la sincronización: recibe contenido desde el maestro y no necesita configuración aquí.', 'vk7k-wp-sync' ); ?>
+					</div>
+				<?php else : ?>
+					<div class="vk7k-mb-notice vk7k-mb-notice-warn">
+						<?php esc_html_e( 'Debes vincular un entorno remoto en los ajustes de uxcribe.cl Sync para sincronizar.', 'vk7k-wp-sync' ); ?><br/>
+						<a href="<?php echo esc_url( admin_url( 'admin.php?page=uxcribe-sync' ) ); ?>" class="button button-small" style="margin-top: 6px;">
+							<?php esc_html_e( 'Configurar Sync', 'vk7k-wp-sync' ); ?>
+						</a>
+					</div>
+				<?php endif; ?>
 			<?php else : ?>
 				
 				<!-- Live Dependency / Inspection Box -->
@@ -862,6 +869,49 @@ class VK7K_Sync_Admin {
 											<?php esc_html_e( 'Rotar clave ahora', 'vk7k-wp-sync' ); ?>
 										</button>
 									<?php endif; ?>
+								</div>
+
+								<?php $has_peer_cred = VK7K_Sync_Auth::has_peer_credential(); ?>
+								<div class="vk7k-form-group" id="vk7k-trust-card">
+									<label><strong><?php esc_html_e( 'Confianza con el servidor remoto', 'vk7k-wp-sync' ); ?></strong></label>
+									<?php if ( 'slave' === $current_role && $has_peer_cred ) : ?>
+										<p class="description" style="color:#92400e;">
+											⚠️
+											<?php
+											printf(
+												/* translators: %s: target URL */
+												esc_html__( 'Este sitio es RECEPTOR pero guarda la clave para escribir en %s. No la necesita: con ella, un compromiso de este sitio alcanzaría también al maestro.', 'vk7k-wp-sync' ),
+												esc_html( VK7K_Sync_Auth::peer_target_url() ?: __( 'el servidor remoto', 'vk7k-wp-sync' ) )
+											);
+											?>
+										</p>
+										<button type="button" class="button button-secondary" id="vk7k-btn-clear-peer-key">
+											<span class="dashicons dashicons-shield" style="margin-top:3px;"></span>
+											<?php esc_html_e( 'Eliminar credencial del maestro (unidireccional)', 'vk7k-wp-sync' ); ?>
+										</button>
+									<?php elseif ( 'slave' === $current_role ) : ?>
+										<p class="description">
+											✓
+											<?php esc_html_e( 'Receptor con confianza unidireccional: no guarda credenciales del maestro, solo acepta peticiones autenticadas con su propia clave.', 'vk7k-wp-sync' ); ?>
+										</p>
+									<?php elseif ( $has_peer_cred ) : ?>
+										<p class="description">
+											ℹ️
+											<?php
+											printf(
+												/* translators: %s: target URL */
+												esc_html__( 'Maestro: guarda la clave de %s porque es este sitio el que inicia la sincronización. Es lo esperado; esa clave se rota sola.', 'vk7k-wp-sync' ),
+												esc_html( VK7K_Sync_Auth::peer_target_url() ?: __( 'el servidor remoto', 'vk7k-wp-sync' ) )
+											);
+											?>
+										</p>
+									<?php else : ?>
+										<p class="description" style="color:#92400e;">
+											⚠️
+											<?php esc_html_e( 'Este sitio no tiene la clave del servidor remoto: podrá recibir, pero no podrá iniciar sincronizaciones hasta configurar la conexión.', 'vk7k-wp-sync' ); ?>
+										</p>
+									<?php endif; ?>
+									<p class="description" id="vk7k-peer-stores-key-note" style="display:none;"></p>
 								</div>
 							</div>
 

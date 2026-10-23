@@ -1018,6 +1018,69 @@ class VK7K_Sync_Auth {
 	}
 
 	/**
+	 * Does this site hold a credential to INITIATE requests to a peer?
+	 *
+	 * @return bool
+	 */
+	public static function has_peer_credential() {
+		$settings = self::get_settings();
+		if ( ! empty( $settings['remote_secret_key'] ) ) {
+			return true;
+		}
+
+		$target = self::get_active_target();
+
+		return ! empty( $target['remote_secret_key'] );
+	}
+
+	/**
+	 * URL this site would initiate requests to (empty when one-way / receptor only).
+	 *
+	 * @return string
+	 */
+	public static function peer_target_url() {
+		$target   = self::get_active_target();
+		$settings = self::get_settings();
+
+		return (string) ( $target['remote_url'] ?? ( $settings['remote_url'] ?? '' ) );
+	}
+
+	/**
+	 * Drop the credentials used to initiate requests to a peer.
+	 *
+	 * One-way trust: the receptor keeps its own key (so the master can write here)
+	 * but stores nothing that would let it write back to the master.
+	 *
+	 * @return array{cleared:bool,had_key:bool}
+	 */
+	public static function clear_peer_credentials() {
+		$settings = self::get_settings();
+		$had_key  = ! empty( $settings['remote_secret_key'] ) || ! empty( $settings['remote_secret_key_prev'] );
+
+		$settings['remote_secret_key']              = '';
+		$settings['remote_secret_key_prev']         = '';
+		$settings['remote_secret_key_prev_expires'] = 0;
+
+		// save_vault() falls back to the STORED value when the incoming one is empty,
+		// so an explicit skip_read pass is required for the removal to survive.
+		self::save_settings( $settings );
+		self::save_vault( $settings, true );
+
+		$state = self::get_targets();
+		if ( ! empty( $state['targets'] ) && is_array( $state['targets'] ) ) {
+			foreach ( $state['targets'] as $target_id => $target_info ) {
+				if ( ! empty( $target_info['remote_secret_key'] ) ) {
+					$had_key = true;
+				}
+				$state['targets'][ $target_id ]['remote_secret_key'] = '';
+			}
+			self::save_targets_raw( $state );
+		}
+
+		return array( 'cleared' => true, 'had_key' => $had_key );
+	}
+
+	/**
 	 * Get all plugin settings with defaults.
 	 *
 	 * @return array

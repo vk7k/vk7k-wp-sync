@@ -1379,6 +1379,18 @@ class VK7K_Sync_Runner {
 	}
 
 	/**
+	 * Ask the remote to drop this site's credential on its side (one-way trust).
+	 *
+	 * @param string $remote_url
+	 * @param string $secret_key
+	 * @param string $remote_ip
+	 * @return array|WP_Error
+	 */
+	public static function enforce_one_way_trust( $remote_url = '', $secret_key = '', $remote_ip = '' ) {
+		return self::send_remote_request( 'auth/one-way', array(), $remote_url, $secret_key, $remote_ip );
+	}
+
+	/**
 	 * Pull newer plugin version from remote site via REST API and unpack locally.
 	 *
 	 * @param string $remote_url

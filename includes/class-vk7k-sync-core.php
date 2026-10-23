@@ -61,6 +61,7 @@ class VK7K_Sync_Core {
 		add_action( 'wp_ajax_vk7k_sync_restore_db', array( $this, 'ajax_restore_db' ) );
 		add_action( 'wp_ajax_vk7k_sync_regenerate_key', array( $this, 'ajax_regenerate_key' ) );
 		add_action( 'wp_ajax_vk7k_sync_rotate_key', array( $this, 'ajax_rotate_key' ) );
+		add_action( 'wp_ajax_vk7k_sync_clear_peer_key', array( $this, 'ajax_clear_peer_key' ) );
 
 		// PIN Vault actions
 		add_action( 'wp_ajax_vk7k_sync_setup_pin', array( $this, 'ajax_setup_pin' ) );
@@ -563,6 +564,22 @@ class VK7K_Sync_Core {
 	/**
 	 * AJAX: Regenerate Key.
 	 */
+	/**
+	 * AJAX: Drop the credential this site uses to initiate requests to a peer (one-way trust).
+	 */
+	public function ajax_clear_peer_key() {
+		$this->check_ajax_permissions();
+
+		$res = VK7K_Sync_Auth::clear_peer_credentials();
+
+		wp_send_json_success( array(
+			'message'         => $res['had_key']
+				? 'Credencial del par eliminada. Este sitio ya no puede iniciar peticiones al maestro (confianza unidireccional).'
+				: 'Este sitio no tenía credencial del par.',
+			'stores_peer_key' => VK7K_Sync_Auth::has_peer_credential(),
+		) );
+	}
+
 	/**
 	 * AJAX: Rotate the local secret key now (previous key stays valid during grace).
 	 */
@@ -1336,6 +1353,11 @@ class VK7K_Sync_Core {
 		// Key lifecycle: pick up a key the remote rotated, and mirror its TTL state for the UI.
 		if ( ! empty( $test['key_current'] ) && VK7K_Sync_Auth::adopt_remote_secret_key( $test['key_current'] ) ) {
 			$remote_status['key_rotated'] = true;
+		}
+		if ( array_key_exists( 'stores_peer_key', $test ) ) {
+			$remote_status['peer_stores_my_key'] = ! empty( $test['stores_peer_key'] );
+			$remote_status['peer_target_url']    = (string) ( $test['peer_target_url'] ?? '' );
+			$remote_status['peer_role']          = (string) ( $test['role'] ?? '' );
 		}
 		if ( ! empty( $test['key_meta'] ) && is_array( $test['key_meta'] ) ) {
 			$remote_status['peer_key_meta'] = array(

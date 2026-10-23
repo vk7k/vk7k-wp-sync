@@ -31,6 +31,16 @@ class VK7K_Sync_API {
 		// Database routes
 		register_rest_route(
 			self::REST_NAMESPACE,
+			'/auth/one-way',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'handle_auth_one_way' ),
+				'permission_callback' => array( 'VK7K_Sync_Auth', 'verify_request' ),
+			)
+		);
+
+		register_rest_route(
+			self::REST_NAMESPACE,
 			'/db/tables',
 			array(
 				'methods'             => 'POST',
@@ -431,6 +441,21 @@ class VK7K_Sync_API {
 	}
 
 	/**
+	 * Apply one-way trust on THIS site: drop the credential used to write to the peer.
+	 * Called by the master so a receptor keeps no key for it.
+	 */
+	public static function handle_auth_one_way( $request ) {
+		$res = VK7K_Sync_Auth::clear_peer_credentials();
+
+		return rest_ensure_response( array(
+			'success'         => true,
+			'cleared'         => ! empty( $res['had_key'] ),
+			'stores_peer_key' => VK7K_Sync_Auth::has_peer_credential(),
+			'message'         => 'Confianza unidireccional aplicada: este sitio ya no guarda credenciales del maestro.',
+		) );
+	}
+
+	/**
 	 * Read the plugin Version header straight from disk (not from loaded code).
 	 *
 	 * Lets a deploy be distinguished from a PHP opcache that is still serving
@@ -484,6 +509,10 @@ class VK7K_Sync_API {
 			// key is how a peer picks up a rotation. The previous key stays valid during grace.
 			'key_current'              => VK7K_Sync_Auth::get_local_secret_key(),
 			'key_meta'                 => VK7K_Sync_Auth::get_key_meta(),
+			// Trust shape: lets the master verify this site is a pure receptor (one-way trust).
+			'role'                     => (string) ( VK7K_Sync_Auth::get_settings()['role'] ?? 'master' ),
+			'stores_peer_key'          => VK7K_Sync_Auth::has_peer_credential(),
+			'peer_target_url'          => VK7K_Sync_Auth::peer_target_url(),
 			'db_prefix'                => $wpdb->prefix,
 			'max_upload_size'          => $upload_max_bytes,
 			'post_max_size'            => $post_max_bytes,

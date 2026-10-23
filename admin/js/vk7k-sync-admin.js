@@ -278,11 +278,27 @@
 		applyRoleUi(currentRole, false);
 	}
 
-	function showConnectionAlert(type, message) {
+	function showConnectionAlert(type, message, testData) {
 		const $box = $('#vk7k-connection-result');
+		let html = message;
+
+		// One-way trust check: does the remote keep a credential to write back into THIS site?
+		if (testData && typeof testData.stores_peer_key !== 'undefined') {
+			const $note = $('#vk7k-peer-stores-key-note');
+			if (testData.stores_peer_key) {
+				const target = testData.peer_target_url || 'este sitio';
+				html += `<div style="margin-top:6px;color:#92400e;">⚠️ El servidor remoto guarda una credencial para escribir en <strong>${target}</strong>. Si es solo receptor, conviene eliminarla allá (confianza unidireccional).</div>`;
+				if ($note.length) {
+					$note.text(`⚠️ El remoto guarda una credencial para ${target} (puede iniciar peticiones hacia este sitio).`).show();
+				}
+			} else if ($note.length) {
+				$note.text('✓ El servidor remoto NO guarda credenciales para escribir en este sitio.').show();
+			}
+		}
+
 		$box.removeClass('is-success is-error is-warning is-info')
 			.addClass('is-' + type)
-			.html(message)
+			.html(html)
 			.slideDown(200);
 	}
 
@@ -333,7 +349,7 @@
 					const deployBtn = `<button type="button" class="button button-small vk7k-manual-deploy-btn" style="margin-left:8px;"><span class="dashicons dashicons-upload" style="vertical-align:middle;font-size:15px;width:15px;height:15px;"></span> Desplegar v${lVer} local al remoto</button>`;
 					showConnectionAlert('warning', `<strong>⚠️ Discrepancia de versiones:</strong> ${siteName} tiene Plugin v${rVer} (Local: v${lVer}). Se recomienda desplegar la versión local con ${deployBtn}`);
 				} else {
-					showConnectionAlert('success', `<strong>✓ Conexión establecida:</strong> ${siteName}${wpVer}${pluginVer} está listo para sincronizar.`);
+					showConnectionAlert('success', `<strong>✓ Conexión establecida:</strong> ${siteName}${wpVer}${pluginVer} está listo para sincronizar.`, res.data);
 				}
 			} else {
 				isConnectionVerified = false;
@@ -713,7 +729,7 @@
 					const deployBtn = `<button type="button" class="button button-small vk7k-manual-deploy-btn" style="margin-left:8px;"><span class="dashicons dashicons-upload" style="vertical-align:middle;font-size:15px;width:15px;height:15px;"></span> Desplegar v${lVer} local al remoto</button>`;
 					showConnectionAlert('warning', `<strong>⚠️ Conexión establecida y guardada (con discrepancia de versión):</strong> ${siteName}${wpVer} tiene Plugin v${rVer} (Local: v${lVer}). ${deployBtn}`);
 				} else {
-					showConnectionAlert('success', `<strong>✓ Conexión establecida y ajustes guardados:</strong> Conectado con ${siteName}${wpVer}${pluginVer}. Entorno listo para sincronizar.`);
+					showConnectionAlert('success', `<strong>✓ Conexión establecida y ajustes guardados:</strong> Conectado con ${siteName}${wpVer}${pluginVer}. Entorno listo para sincronizar.`, testRes.data);
 				}
 			} catch (err) {
 				isConnectionVerified = false;
@@ -762,6 +778,37 @@
 				initialCheckTimer = null;
 			}
 			runTestConnectionFlow(false);
+		});
+
+		$(document).on('click', '#vk7k-btn-clear-peer-key', async function(e) {
+			e.preventDefault();
+			const $btn = $(this);
+			if ($btn.prop('disabled')) {
+				return;
+			}
+			if (!window.confirm('¿Eliminar de este sitio la clave del maestro? Dejará de poder iniciar sincronizaciones contra él (seguirá recibiendo contenido si es el receptor). Es reversible volviendo a pegar la clave.')) {
+				return;
+			}
+			$btn.prop('disabled', true).html('<span class="dashicons dashicons-update vk7k-spin"></span> Eliminando...');
+			try {
+				const res = await $.ajax({
+					url: vk7kSyncData.ajaxUrl,
+					type: 'POST',
+					data: { action: 'vk7k_sync_clear_peer_key', nonce: vk7kSyncData.nonce }
+				});
+				if (res && res.success) {
+					showConnectionAlert('success', `<strong>✓ Confianza unidireccional:</strong> ${res.data.message}`);
+					$('#vk7k-trust-card').find('.description').hide();
+					$('#vk7k-trust-card').append('<p class="description">✓ Confianza unidireccional activa: este sitio no guarda credenciales del maestro.</p>');
+					$btn.remove();
+				} else {
+					showConnectionAlert('error', `<strong>⚠️ Error:</strong> ${getErrorMessage(res)}`);
+					$btn.prop('disabled', false).html('<span class="dashicons dashicons-shield"></span> Eliminar credencial del maestro');
+				}
+			} catch (err) {
+				showConnectionAlert('error', `<strong>⚠️ Error:</strong> ${getErrorMessage(err)}`);
+				$btn.prop('disabled', false).html('<span class="dashicons dashicons-shield"></span> Eliminar credencial del maestro');
+			}
 		});
 
 		$(document).on('click', '#vk7k-btn-rotate-key', async function(e) {

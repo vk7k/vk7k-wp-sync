@@ -16,6 +16,7 @@
  *   wp vk7k-sync push-fse
  *   wp vk7k-sync finalize
  *   wp vk7k-sync key [--ttl=<days>] [--grace=<days>] [--rotate]
+ *   wp vk7k-sync trust [--one-way] [--remote]
  *
  * Usage via Direct PHP CLI:
  *   php wp-content/plugins/vk7k-wp-sync/includes/class-vk7k-sync-cli.php <command> [args...]
@@ -261,6 +262,68 @@ class VK7K_Sync_CLI {
 	}
 
 	/**
+	 * Show the trust shape, or drop the credential used to initiate requests to a peer.
+	 *
+	 * ## OPTIONS
+	 *
+	 * [--one-way]
+	 * : Remove this site's credential for the peer (the receptor keeps only its own key).
+	 *
+	 * [--remote]
+	 * : With --one-way, apply it on the REMOTE site instead (no SSH needed).
+	 *
+	 * ## EXAMPLES
+	 *
+	 *     wp vk7k-sync trust
+	 *     wp vk7k-sync trust --one-way
+	 *     wp vk7k-sync trust --one-way --remote
+	 */
+	public function trust( $args = array(), $assoc_args = array() ) {
+		// --remote applies the change on the peer, so it must win over the local branch.
+		if ( ! empty( $assoc_args['remote'] ) && ! empty( $assoc_args['one-way'] ) ) {
+			$target = VK7K_Sync_Core::resolve_remote_target();
+			if ( empty( $target['remote_url'] ) || empty( $target['secret_key'] ) ) {
+				self::output( array( 'success' => false, 'message' => 'Sin destino remoto configurado.' ) );
+				return;
+			}
+
+			$status = VK7K_Sync_Core::build_remote_status();
+			$before = ! empty( $status['peer_stores_my_key'] );
+
+			$res = VK7K_Sync_Runner::enforce_one_way_trust( $target['remote_url'], $target['secret_key'], $target['remote_ip'] );
+			if ( is_wp_error( $res ) ) {
+				self::output( array( 'success' => false, 'message' => $res->get_error_message() ) );
+				return;
+			}
+
+			self::output( array(
+				'remote'              => $target['remote_url'],
+				'peer_stored_my_key'  => $before,
+				'peer_stores_key_now' => isset( $res['stores_peer_key'] ) ? (bool) $res['stores_peer_key'] : null,
+				'cleared'             => isset( $res['cleared'] ) ? (bool) $res['cleared'] : null,
+				'message'             => $res['message'] ?? '',
+			) );
+			return;
+		}
+
+		if ( ! empty( $assoc_args['one-way'] ) ) {
+			$res = VK7K_Sync_Auth::clear_peer_credentials();
+			self::output( array(
+				'message'         => $res['had_key'] ? 'Credencial del par eliminada (confianza unidireccional).' : 'No había credencial del par.',
+				'stores_peer_key' => VK7K_Sync_Auth::has_peer_credential(),
+			) );
+			return;
+		}
+
+		$settings = VK7K_Sync_Auth::get_settings();
+		self::output( array(
+			'role'            => $settings['role'] ?? 'master',
+			'stores_peer_key' => VK7K_Sync_Auth::has_peer_credential(),
+			'peer_target_url' => VK7K_Sync_Auth::peer_target_url(),
+		) );
+	}
+
+	/**
 	 * Direct PHP CLI runner when invoked outside WP-CLI.
 	 *
 	 * @param array $argv
@@ -307,6 +370,7 @@ class VK7K_Sync_CLI {
 						'push-fse',
 						'finalize',
 						'key [--ttl=<days>] [--grace=<days>] [--rotate]',
+						'trust [--one-way] [--remote]',
 					),
 				)
 			);
