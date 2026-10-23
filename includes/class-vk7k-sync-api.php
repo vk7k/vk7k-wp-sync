@@ -91,6 +91,16 @@ class VK7K_Sync_API {
 
 		register_rest_route(
 			self::REST_NAMESPACE,
+			'/db/delete-post',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'handle_db_delete_post' ),
+				'permission_callback' => array( 'VK7K_Sync_Auth', 'verify_request' ),
+			)
+		);
+
+		register_rest_route(
+			self::REST_NAMESPACE,
 			'/db/push-options',
 			array(
 				'methods'             => 'POST',
@@ -219,6 +229,26 @@ class VK7K_Sync_API {
 			array(
 				'methods'             => 'POST',
 				'callback'            => array( __CLASS__, 'handle_files_download_chunk' ),
+				'permission_callback' => array( 'VK7K_Sync_Auth', 'verify_request' ),
+			)
+		);
+
+		register_rest_route(
+			self::REST_NAMESPACE,
+			'/files/stat',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'handle_files_stat' ),
+				'permission_callback' => array( 'VK7K_Sync_Auth', 'verify_request' ),
+			)
+		);
+
+		register_rest_route(
+			self::REST_NAMESPACE,
+			'/files/theme-template',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'handle_files_write_theme_template' ),
 				'permission_callback' => array( 'VK7K_Sync_Auth', 'verify_request' ),
 			)
 		);
@@ -438,6 +468,95 @@ class VK7K_Sync_API {
 			'maintenance' => true,
 			'message'     => 'Sitio remoto en modo mantenimiento y Safe-Mode activo.',
 		) );
+	}
+
+	/**
+	 * Write the theme file for each pushed block template / template part.
+	 *
+	 * A wp_template(_part) row alone is not enough: WP keeps serving the theme file
+	 * (especially when the row's wp_theme term belongs to a parent theme), so the file
+	 * is mirrored from the freshly imported DB content.
+	 *
+	 * @param array $posts Posts payload from the granular package.
+	 * @return array{written:array,errors:array}
+	 */
+	private static function sync_theme_files_for_posts( $posts ) {
+		$written = array();
+		$errors  = array();
+
+		foreach ( (array) $posts as $row ) {
+			$type = isset( $row['post_type'] ) ? (string) $row['post_type'] : '';
+			if ( ! in_array( $type, array( 'wp_template', 'wp_template_part' ), true ) ) {
+				continue;
+			}
+
+			$post = ! empty( $row['ID'] ) ? get_post( (int) $row['ID'] ) : null;
+			if ( ! $post || $post->post_type !== $type ) {
+				$slug  = isset( $row['post_name'] ) ? (string) $row['post_name'] : '';
+				$found = $slug ? get_posts( array(
+					'post_type'   => $type,
+					'name'        => $slug,
+					'numberposts' => 1,
+					'post_status' => 'any',
+				) ) : array();
+				$post = $found ? $found[0] : null;
+			}
+
+			if ( ! $post || in_array( $post->post_status, array( 'trash', 'auto-draft' ), true ) ) {
+				continue;
+			}
+
+			$res = VK7K_Sync_Files::write_theme_template_file( $type, $post->post_name, $post->post_content );
+			if ( is_wp_error( $res ) ) {
+				$errors[] = $type . ' ' . $post->post_name . ': ' . $res->get_error_message();
+			} else {
+				$written[] = $res['path'];
+			}
+		}
+
+		return array( 'written' => $written, 'errors' => $errors );
+	}
+
+	/**
+	 * Handle a direct file existence check (used for the missing-media pre-flight).
+	 */
+	public static function handle_files_stat( $request ) {
+		$params = $request->get_json_params();
+		$files  = isset( $params['files'] ) && is_array( $params['files'] ) ? $params['files'] : array();
+
+		if ( empty( $files ) ) {
+			return new WP_Error( 'vk7k_empty_stat', 'No se recibieron rutas para comprobar.', array( 'status' => 400 ) );
+		}
+
+		$res = VK7K_Sync_Files::stat_files( array_slice( $files, 0, 500 ) );
+
+		return rest_ensure_response( array(
+			'success'  => true,
+			'existing' => $res['existing'],
+			'missing'  => $res['missing'],
+		) );
+	}
+
+	/**
+	 * Write a block-theme template / part file directly (content from the master).
+	 */
+	public static function handle_files_write_theme_template( $request ) {
+		$params  = $request->get_json_params();
+		$kind    = isset( $params['kind'] ) ? sanitize_key( $params['kind'] ) : '';
+		$slug    = isset( $params['slug'] ) ? sanitize_title( $params['slug'] ) : '';
+		$content = isset( $params['content'] ) ? (string) $params['content'] : '';
+		$theme   = isset( $params['theme'] ) ? sanitize_file_name( $params['theme'] ) : '';
+
+		if ( '' === $kind || '' === $slug ) {
+			return new WP_Error( 'vk7k_bad_request', 'Faltan kind/slug de la plantilla.', array( 'status' => 400 ) );
+		}
+
+		$res = VK7K_Sync_Files::write_theme_template_file( $kind, $slug, $content, $theme );
+		if ( is_wp_error( $res ) ) {
+			return $res;
+		}
+
+		return rest_ensure_response( $res );
 	}
 
 	/**
@@ -1129,15 +1248,24 @@ class VK7K_Sync_API {
 		}
 		flush_rewrite_rules( true );
 
-		// Collect permalinks of synced posts (excluding attachments)
+		// Block templates/parts: mirror the DB row into the theme file (otherwise WP keeps the old file).
+		$theme_files = self::sync_theme_files_for_posts( isset( $params['posts'] ) ? $params['posts'] : array() );
+
+		// Collect permalinks of synced posts (excluding attachments). Templates/parts get a
+		// site-editor URL instead of a meaningless front-end permalink.
 		$post_urls = array();
 		foreach ( $synced_ids as $sid ) {
 			$ptype = get_post_type( $sid );
-			if ( $ptype && 'attachment' !== $ptype ) {
-				$permalink = get_permalink( $sid );
-				if ( $permalink ) {
-					$post_urls[ $sid ] = $permalink;
-				}
+			if ( ! $ptype || 'attachment' === $ptype ) {
+				continue;
+			}
+			if ( in_array( $ptype, array( 'wp_template', 'wp_template_part' ), true ) ) {
+				$post_urls[ $sid ] = admin_url( 'site-editor.php?postType=' . $ptype . '&postId=' . get_stylesheet() . '//' . get_post_field( 'post_name', $sid ) );
+				continue;
+			}
+			$permalink = get_permalink( $sid );
+			if ( $permalink ) {
+				$post_urls[ $sid ] = $permalink;
 			}
 		}
 
@@ -1147,10 +1275,44 @@ class VK7K_Sync_API {
 				'posts_synced' => count( $synced_ids ),
 				'post_ids'     => $synced_ids,
 				'post_urls'    => $post_urls,
+				'theme_files'  => $theme_files['written'],
+				'theme_file_errors' => $theme_files['errors'],
 				'meta_synced'  => $meta_count,
 				'message'      => sprintf( '%d entrada(s) y %d metadatos sincronizados con éxito.', count( $synced_ids ), $meta_count ),
 			)
 		);
+	}
+
+	/**
+	 * Permanently delete a post on this site (used when the local copy is trashed
+	 * and the caller asked for delete_trashed instead of mirroring the trash state).
+	 */
+	public static function handle_db_delete_post( $request ) {
+		$params  = $request->get_json_params();
+		$post_id = isset( $params['post_id'] ) ? (int) $params['post_id'] : 0;
+
+		if ( $post_id <= 0 ) {
+			return new WP_Error( 'vk7k_bad_post', 'ID de entrada inválido.', array( 'status' => 400 ) );
+		}
+
+		$post = get_post( $post_id );
+		if ( ! $post ) {
+			return rest_ensure_response( array(
+				'success' => true,
+				'deleted' => false,
+				'message' => 'La entrada no existe en este sitio.',
+			) );
+		}
+
+		$deleted = wp_delete_post( $post_id, true );
+
+		return rest_ensure_response( array(
+			'success' => (bool) $deleted,
+			'deleted' => (bool) $deleted,
+			'post_id' => $post_id,
+			'type'    => $post->post_type,
+			'message' => $deleted ? 'Entrada eliminada definitivamente.' : 'No se pudo eliminar la entrada.',
+		) );
 	}
 
 	/**
@@ -1345,6 +1507,9 @@ class VK7K_Sync_API {
 			}
 		}
 
+		// Mirror block templates/parts into the theme files.
+		$theme_files = ! empty( $package['posts'] ) ? self::sync_theme_files_for_posts( $package['posts'] ) : array( 'written' => array(), 'errors' => array() );
+
 		// Forward users payload to import_users
 		$users_synced = 0;
 		if ( ! empty( $package['users'] ) ) {
@@ -1374,6 +1539,8 @@ class VK7K_Sync_API {
 			'options_synced'  => $options_synced,
 			'users_synced'    => $users_synced,
 			'remote_post_url' => $remote_post_url,
+			'theme_files'       => $theme_files['written'],
+			'theme_file_errors' => $theme_files['errors'],
 			'media_needed'    => ! empty( $package['media_files'] ) ? $package['media_files'] : array(),
 			'message'         => 'Importación granular completada: ' . ( ! empty( $summary_msgs ) ? implode( ', ', $summary_msgs ) : 'sin cambios' ) . '.',
 		) );

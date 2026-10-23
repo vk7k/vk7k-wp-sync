@@ -1681,6 +1681,9 @@ class VK7K_Sync_Core {
 			}
 		}
 
+		// Pre-flight: adjuntos referenciados por el contenido que no existen en el remoto.
+		$missing_media = VK7K_Sync_Runner::find_missing_remote_media( array( $post_id ) );
+
 		$post_title = get_the_title( $post_id );
 		$msg = sprintf(
 			__( '¡Push completado con éxito! "%s" subido a remoto (%d entrada, %d metadatos, %d archivos de medios transferidos).', 'vk7k-wp-sync' ),
@@ -1690,12 +1693,26 @@ class VK7K_Sync_Core {
 			$media_synced
 		);
 
+		if ( ! empty( $missing_media ) ) {
+			$msg .= sprintf(
+				' ⚠️ %d adjunto(s) referenciados no existen en el remoto: las imágenes se verán rotas hasta subir los archivos.',
+				count( $missing_media )
+			);
+		}
+
+		$theme_files = isset( $res['theme_files'] ) && is_array( $res['theme_files'] ) ? $res['theme_files'] : array();
+		if ( ! empty( $theme_files ) ) {
+			$msg .= sprintf( ' Plantilla(s) del tema actualizadas en el remoto: %d.', count( $theme_files ) );
+		}
+
 		wp_send_json_success( array(
 			'message'         => $msg,
 			'remote_post_url' => $remote_post_url,
 			'posts_synced'    => count( $package['posts'] ),
 			'meta_synced'     => count( $package['postmeta'] ),
 			'media_synced'    => $media_synced,
+			'missing_media'   => $missing_media,
+			'theme_files'     => $theme_files,
 		) );
 	}
 

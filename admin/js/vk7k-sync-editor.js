@@ -356,9 +356,17 @@
 					throw new Error( data.data && data.data.message ? data.data.message : 'Error durante la sincronización Push.' );
 				}
 
+				const missingMedia = data.data && Array.isArray( data.data.missing_media ) ? data.data.missing_media.length : 0;
+				const themeFiles   = data.data && Array.isArray( data.data.theme_files ) ? data.data.theme_files.length : 0;
+				let pushText = data.data.message || 'Contenido y medios subidos exitosamente a remoto.';
+				if ( themeFiles ) {
+					pushText += ' Plantilla(s) del tema actualizadas en el remoto: ' + themeFiles + '.';
+				}
+
 				setStatus( {
-					type: 'success',
-					text: data.data.message || 'Contenido y medios subidos exitosamente a remoto.',
+					// Un push que deja imágenes rotas no es un éxito limpio.
+					type: missingMedia ? 'warning' : 'success',
+					text: pushText,
 					remoteUrl: data.data && data.data.remote_post_url ? data.data.remote_post_url : '',
 				} );
 				setSyncStep( '' );

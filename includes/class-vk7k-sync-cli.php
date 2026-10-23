@@ -10,7 +10,8 @@
  *   wp vk7k-sync status
  *   wp vk7k-sync deploy-self
  *   wp vk7k-sync push-plugin <slug> [--activate]
- *   wp vk7k-sync push-post <id1,id2,...>
+ *   wp vk7k-sync push-files <components> [--force] [--themes=slugs]
+ *   wp vk7k-sync push-post <id1,id2,...> [--delete-trashed] [--no-check-media]
  *   wp vk7k-sync push-post-type <post_type>
  *   wp vk7k-sync push-options <prefix_or_keys> [--prefix]
  *   wp vk7k-sync push-fse
@@ -74,6 +75,8 @@ class VK7K_Sync_CLI {
 	 * ## EXAMPLES
 	 *
 	 *     wp vk7k-sync status
+	 *
+	 * @subcommand status
 	 */
 	public function status( $args = array(), $assoc_args = array() ) {
 		$res = VK7K_Sync_Runner::test_connection();
@@ -90,6 +93,9 @@ class VK7K_Sync_CLI {
 	 * ## EXAMPLES
 	 *
 	 *     wp vk7k-sync deploy-self
+	 *
+	 * @subcommand deploy-self
+	 * @alias deploy_self
 	 */
 	public function deploy_self( $args = array(), $assoc_args = array() ) {
 		$res = VK7K_Sync_Runner::deploy_plugin_to_remote_via_rest();
@@ -97,6 +103,50 @@ class VK7K_Sync_CLI {
 			self::output( array( 'success' => false, 'message' => $res->get_error_message() ) );
 			return;
 		}
+		self::output( $res );
+	}
+
+	/**
+	 * Push files of one or more components (uploads, themes, plugins, languages).
+	 *
+	 * ## OPTIONS
+	 *
+	 * <components>
+	 * : Comma separated: uploads,themes,plugins,languages
+	 *
+	 * [--force]
+	 * : Send every file of the component, ignoring the size/hash diff.
+	 *
+	 * [--themes=<slugs>]
+	 * : Comma separated theme slugs (defaults to all).
+	 *
+	 * ## EXAMPLES
+	 *
+	 *     wp vk7k-sync push-files themes
+	 *     wp vk7k-sync push-files themes --themes=fusem-2026 --force
+	 *     wp vk7k-sync push-files uploads --force
+	 *
+	 * @subcommand push-files
+	 * @alias push_files
+	 */
+	public function push_files( $args = array(), $assoc_args = array() ) {
+		$components = array_filter( array_map( 'sanitize_key', explode( ',', (string) ( $args[0] ?? 'uploads' ) ) ) );
+		$options    = array();
+
+		if ( ! empty( $assoc_args['themes'] ) ) {
+			$options['selected_themes'] = array_map( 'sanitize_title', explode( ',', (string) $assoc_args['themes'] ) );
+		}
+		if ( ! empty( $assoc_args['plugins'] ) ) {
+			$options['selected_plugins'] = array_map( 'sanitize_title', explode( ',', (string) $assoc_args['plugins'] ) );
+		}
+
+		$res = VK7K_Sync_Runner::push_files(
+			$components,
+			array(
+				'force'   => ! empty( $assoc_args['force'] ),
+				'options' => $options,
+			)
+		);
 		self::output( $res );
 	}
 
@@ -114,6 +164,9 @@ class VK7K_Sync_CLI {
 	 * ## EXAMPLES
 	 *
 	 *     wp vk7k-sync push-plugin vk7k-customer-reviews --activate
+	 *
+	 * @subcommand push-plugin
+	 * @alias push_plugin
 	 */
 	public function push_plugin( $args = array(), $assoc_args = array() ) {
 		$slug     = $args[0] ?? '';
@@ -134,6 +187,9 @@ class VK7K_Sync_CLI {
 	 *
 	 *     wp vk7k-sync push-post 7
 	 *     wp vk7k-sync push-post 7,1164,1165
+	 *
+	 * @subcommand push-post
+	 * @alias push_post
 	 */
 	public function push_post( $args = array(), $assoc_args = array() ) {
 		$ids = array();
@@ -145,7 +201,14 @@ class VK7K_Sync_CLI {
 				}
 			}
 		}
-		$res = VK7K_Sync_Runner::push_posts( $ids );
+		$res = VK7K_Sync_Runner::push_posts(
+			$ids,
+			'',
+			array(
+				'delete_trashed' => ! empty( $assoc_args['delete-trashed'] ),
+				'check_media'    => empty( $assoc_args['no-check-media'] ),
+			)
+		);
 		self::output( $res );
 	}
 
@@ -163,6 +226,9 @@ class VK7K_Sync_CLI {
 	 * ## EXAMPLES
 	 *
 	 *     wp vk7k-sync push-post-type vk7k_review
+	 *
+	 * @subcommand push-post-type
+	 * @alias push_post_type
 	 */
 	public function push_post_type( $args = array(), $assoc_args = array() ) {
 		$post_type = $args[0] ?? '';
@@ -185,6 +251,9 @@ class VK7K_Sync_CLI {
 	 * ## EXAMPLES
 	 *
 	 *     wp vk7k-sync push-options vk7k_cr_ --prefix
+	 *
+	 * @subcommand push-options
+	 * @alias push_options
 	 */
 	public function push_options( $args = array(), $assoc_args = array() ) {
 		$target    = $args[0] ?? '';
@@ -199,6 +268,9 @@ class VK7K_Sync_CLI {
 	 * ## EXAMPLES
 	 *
 	 *     wp vk7k-sync push-fse
+	 *
+	 * @subcommand push-fse
+	 * @alias push_fse
 	 */
 	public function push_fse( $args = array(), $assoc_args = array() ) {
 		$res = VK7K_Sync_Runner::step_sync_fse( array( 'mode' => 'push' ) );
@@ -211,6 +283,8 @@ class VK7K_Sync_CLI {
 	 * ## EXAMPLES
 	 *
 	 *     wp vk7k-sync finalize
+	 *
+	 * @subcommand finalize
 	 */
 	public function finalize( $args = array(), $assoc_args = array() ) {
 		$res = VK7K_Sync_Runner::step_finalize( array( 'mode' => 'push' ) );
@@ -236,6 +310,8 @@ class VK7K_Sync_CLI {
 	 *     wp vk7k-sync key
 	 *     wp vk7k-sync key --ttl=60 --grace=10
 	 *     wp vk7k-sync key --rotate
+	 *
+	 * @subcommand key
 	 */
 	public function key( $args = array(), $assoc_args = array() ) {
 		$changed = array();
@@ -277,6 +353,8 @@ class VK7K_Sync_CLI {
 	 *     wp vk7k-sync trust
 	 *     wp vk7k-sync trust --one-way
 	 *     wp vk7k-sync trust --one-way --remote
+	 *
+	 * @subcommand trust
 	 */
 	public function trust( $args = array(), $assoc_args = array() ) {
 		// --remote applies the change on the peer, so it must win over the local branch.
@@ -364,7 +442,8 @@ class VK7K_Sync_CLI {
 						'status',
 						'deploy-self',
 						'push-plugin <slug> [--activate]',
-						'push-post <id1,id2,...>',
+						'push-files <uploads|themes|plugins|languages> [--force] [--themes=slugs]',
+						'push-post <id1,id2,...> [--delete-trashed] [--no-check-media]',
 						'push-post-type <post_type>',
 						'push-options <prefix_or_keys> [--prefix]',
 						'push-fse',

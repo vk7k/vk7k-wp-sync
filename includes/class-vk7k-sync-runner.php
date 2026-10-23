@@ -252,12 +252,35 @@ class VK7K_Sync_Runner {
 	 * @param string $purge_post_type Optional post_type to clean on remote before inserting.
 	 * @return array
 	 */
-	public static function push_posts( $post_ids = array(), $purge_post_type = '' ) {
+	public static function push_posts( $post_ids = array(), $purge_post_type = '', $args = array() ) {
 		global $wpdb;
+
+		$delete_trashed = ! empty( $args['delete_trashed'] );
+		$check_media    = ! isset( $args['check_media'] ) || ! empty( $args['check_media'] );
 
 		$post_ids = array_values( array_filter( array_map( 'intval', (array) $post_ids ) ) );
 		if ( empty( $post_ids ) && empty( $purge_post_type ) ) {
 			return array( 'success' => false, 'message' => 'No se especificaron IDs de entradas para enviar.' );
+		}
+
+		// Trashed locally: by default only mirrored as trashed remotely. With delete_trashed
+		// the remote copy is removed instead of parked in its own trash.
+		$trashed_remote = array();
+		if ( $delete_trashed && ! empty( $post_ids ) ) {
+			foreach ( $post_ids as $candidate ) {
+				$remote_res = self::send_remote_request( 'db/delete-post', array( 'post_id' => (int) $candidate ), '', '', '' );
+				if ( ! is_wp_error( $remote_res ) && ! empty( $remote_res['success'] ) ) {
+					$trashed_remote[] = (int) $candidate;
+				}
+			}
+			$post_ids = array_values( array_diff( $post_ids, $trashed_remote ) );
+			if ( empty( $post_ids ) ) {
+				return array(
+					'success'        => true,
+					'deleted_remote' => $trashed_remote,
+					'message'        => sprintf( '%d entrada(s) eliminadas en el remoto (papelera local).', count( $trashed_remote ) ),
+				);
+			}
 		}
 
 		$posts              = array();
@@ -306,7 +329,86 @@ class VK7K_Sync_Runner {
 		if ( is_wp_error( $res ) ) {
 			return array( 'success' => false, 'message' => $res->get_error_message() );
 		}
+
+		// Pre-flight: attachments referenced by these posts that do not exist on the remote.
+		if ( $check_media && ! empty( $post_ids ) && is_array( $res ) ) {
+			$missing = self::find_missing_remote_media( $post_ids );
+			if ( ! empty( $missing ) ) {
+				$res['missing_media'] = $missing;
+				$res['message']       = ( $res['message'] ?? '' ) . sprintf(
+					' ⚠️ %d adjunto(s) referenciados no existen en el remoto: las imágenes se verán rotas hasta subir los archivos.',
+					count( $missing )
+				);
+			}
+		}
+
+		if ( ! empty( $trashed_remote ) && is_array( $res ) ) {
+			$res['deleted_remote'] = $trashed_remote;
+		}
+
 		return $res;
+	}
+
+	/**
+	 * Local attachments referenced by these posts (featured, content, gallery, WooCommerce)
+	 * that are missing on the remote.
+	 *
+	 * @param array $post_ids
+	 * @return array Relative uploads paths missing remotely.
+	 */
+	public static function find_missing_remote_media( $post_ids ) {
+		$used = array();
+
+		foreach ( (array) $post_ids as $post_id ) {
+			$thumb = (int) get_post_thumbnail_id( $post_id );
+			if ( $thumb > 0 ) {
+				$used[] = $thumb;
+			}
+			$post = get_post( $post_id );
+			if ( $post && preg_match_all( '/wp-image-(\d+)|"id":(\d+)/', $post->post_content, $m ) ) {
+				foreach ( array_merge( $m[1], $m[2] ) as $maybe_id ) {
+					if ( (int) $maybe_id > 0 ) {
+						$used[] = (int) $maybe_id;
+					}
+				}
+			}
+			$gallery = get_post_meta( $post_id, '_product_image_gallery', true );
+			if ( ! empty( $gallery ) ) {
+				foreach ( explode( ',', (string) $gallery ) as $gid ) {
+					if ( (int) $gid > 0 ) {
+						$used[] = (int) $gid;
+					}
+				}
+			}
+		}
+
+		$used = array_values( array_unique( array_filter( $used ) ) );
+		$rels = array();
+		foreach ( $used as $att_id ) {
+			if ( 'attachment' !== get_post_type( $att_id ) ) {
+				continue;
+			}
+			$file = get_attached_file( $att_id );
+			if ( ! $file ) {
+				continue;
+			}
+			$uploads = wp_upload_dir();
+			$rel     = ltrim( str_replace( wp_normalize_path( $uploads['basedir'] ), '', wp_normalize_path( $file ) ), '/' );
+			if ( '' !== $rel ) {
+				$rels[] = 'wp-content/uploads/' . $rel;
+			}
+		}
+
+		if ( empty( $rels ) ) {
+			return array();
+		}
+
+		$stat = self::send_remote_request( 'files/stat', array( 'files' => array_values( array_unique( $rels ) ) ), '', '', '' );
+		if ( is_wp_error( $stat ) || empty( $stat['success'] ) ) {
+			return array();
+		}
+
+		return isset( $stat['missing'] ) ? (array) $stat['missing'] : array();
 	}
 
 	/**
@@ -387,6 +489,61 @@ class VK7K_Sync_Runner {
 			return array( 'success' => false, 'message' => $res->get_error_message() );
 		}
 		return $res;
+	}
+
+	/**
+	 * Push files of the given components (uploads, themes, plugins, languages) in chunks.
+	 *
+	 * @param array $components Component list.
+	 * @param array $args       Options: force, options (selected_*), chunk_mb.
+	 * @return array
+	 */
+	public static function push_files( $components = array( 'uploads' ), $args = array() ) {
+		$options = isset( $args['options'] ) ? (array) $args['options'] : array();
+
+		$prep = self::step_prepare_files(
+			array(
+				'mode'       => 'push',
+				'components' => $components,
+				'options'    => $options,
+				'force'      => ! empty( $args['force'] ),
+			)
+		);
+
+		if ( empty( $prep['success'] ) ) {
+			return $prep;
+		}
+
+		$total       = (int) ( $prep['total_files'] ?? 0 );
+		$transferred = 0;
+		$offset      = 0;
+
+		while ( $offset < $total ) {
+			$step = self::step_sync_files_chunk(
+				array(
+					'mode'     => 'push',
+					'offset'   => $offset,
+					'chunk_mb' => (int) ( $args['chunk_mb'] ?? 8 ),
+				)
+			);
+			if ( empty( $step['success'] ) ) {
+				return $step;
+			}
+			$transferred += (int) ( $step['transferred'] ?? 0 );
+			$offset       = (int) ( $step['offset'] ?? ( $offset + 1 ) );
+			if ( ! empty( $step['is_done'] ) ) {
+				break;
+			}
+		}
+
+		return array(
+			'success'     => true,
+			'components'  => $components,
+			'total_files' => $total,
+			'transferred' => $transferred,
+			'forced'      => ! empty( $args['force'] ),
+			'message'     => sprintf( '%d archivos en cola, %d transferidos.', $total, $transferred ),
+		);
 	}
 
 	/**
@@ -833,7 +990,12 @@ class VK7K_Sync_Runner {
 
 		$remote_manifest = ! empty( $remote_res['manifest'] ) ? $remote_res['manifest'] : array();
 
-		if ( 'push' === $mode ) {
+		if ( ! empty( $params['force'] ) ) {
+			// Force: queue every file of the selected components, ignoring the diff.
+			$files_to_sync = ( 'push' === $mode )
+				? array_keys( $local_manifest )
+				: array_keys( $remote_manifest );
+		} elseif ( 'push' === $mode ) {
 			$files_to_sync = VK7K_Sync_Files::calculate_diff( $local_manifest, $remote_manifest );
 		} else {
 			$files_to_sync = VK7K_Sync_Files::calculate_diff( $remote_manifest, $local_manifest );

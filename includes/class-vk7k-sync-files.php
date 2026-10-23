@@ -298,7 +298,7 @@ class VK7K_Sync_Files {
 						$manifest[ $rel_path ] = array(
 							'size'  => filesize( $base_path ),
 							'mtime' => filemtime( $base_path ),
-							'hash'  => ( filesize( $base_path ) < 3 * 1024 * 1024 ) ? md5_file( $base_path ) : '',
+							'hash'  => ( filesize( $base_path ) < self::get_hash_max_bytes() ) ? md5_file( $base_path ) : '',
 						);
 					}
 					continue;
@@ -331,13 +331,119 @@ class VK7K_Sync_Files {
 					$manifest[ $rel_path ] = array(
 						'size'  => $size,
 						'mtime' => $mtime,
-						'hash'  => ( $size < 3 * 1024 * 1024 ) ? md5_file( $filepath ) : '',
+						'hash'  => ( $size < self::get_hash_max_bytes() ) ? md5_file( $filepath ) : '',
 					);
 				}
 			}
 		}
 
 		return $manifest;
+	}
+
+	/**
+	 * Max file size (bytes) to hash in a manifest. Bigger files rely on size+mtime.
+	 *
+	 * @return int
+	 */
+	public static function get_hash_max_bytes() {
+		$default = 20 * 1024 * 1024;
+		$limit   = defined( 'VK7K_SYNC_HASH_MAX_BYTES' ) ? (int) VK7K_SYNC_HASH_MAX_BYTES : (int) apply_filters( 'vk7k_sync_hash_max_bytes', $default );
+
+		return max( 1024 * 1024, $limit );
+	}
+
+	/**
+	 * Write a block-theme template or template part file on disk.
+	 *
+	 * WP renders a theme file even when a wp_template / wp_template_part DB row exists
+	 * (more so when the row's wp_theme term points at a parent theme), so mirroring the
+	 * DB content into the homonym file is what actually makes a push visible.
+	 *
+	 * @param string $kind    wp_template|wp_template_part.
+	 * @param string $slug    Template slug (post_name).
+	 * @param string $content Block markup.
+	 * @param string $theme   Theme directory name (defaults to the active stylesheet).
+	 * @return array|WP_Error
+	 */
+	public static function write_theme_template_file( $kind, $slug, $content, $theme = '' ) {
+		$subdir = ( 'wp_template' === $kind ) ? 'templates' : ( ( 'wp_template_part' === $kind ) ? 'parts' : '' );
+		if ( '' === $subdir ) {
+			return new WP_Error( 'vk7k_bad_kind', 'Tipo de plantilla no soportado: ' . $kind );
+		}
+
+		$slug = sanitize_title( (string) $slug );
+		if ( '' === $slug ) {
+			return new WP_Error( 'vk7k_bad_slug', 'Slug de plantilla inválido.' );
+		}
+
+		$theme      = '' !== $theme ? sanitize_file_name( $theme ) : get_stylesheet();
+		$theme_root = wp_normalize_path( get_theme_root() );
+		$theme_dir  = $theme_root . '/' . $theme;
+
+		if ( ! is_dir( $theme_dir ) ) {
+			return new WP_Error( 'vk7k_no_theme', 'El tema no existe en este sitio: ' . $theme );
+		}
+
+		$dir  = $theme_dir . '/' . $subdir;
+		$file = $dir . '/' . $slug . '.html';
+
+		$norm_file = wp_normalize_path( $file );
+		if ( 0 !== strpos( $norm_file, trailingslashit( $theme_root ) ) || false !== strpos( $norm_file, '..' ) ) {
+			return new WP_Error( 'vk7k_bad_path', 'Ruta fuera del directorio de temas.' );
+		}
+
+		if ( ! is_dir( $dir ) && ! wp_mkdir_p( $dir ) ) {
+			return new WP_Error( 'vk7k_dir_failed', 'No se pudo crear ' . $dir );
+		}
+
+		$bytes = file_put_contents( $file, (string) $content );
+		if ( false === $bytes ) {
+			return new WP_Error( 'vk7k_write_failed', 'No se pudo escribir ' . $file );
+		}
+
+		// Drop the caches WP uses to resolve block templates / theme.json.
+		if ( function_exists( 'wp_clean_theme_json_cache' ) ) {
+			wp_clean_theme_json_cache();
+		}
+		delete_transient( 'wp_theme_files' );
+		delete_option( 'theme_json_cache' );
+		wp_cache_flush();
+		if ( function_exists( 'opcache_invalidate' ) ) {
+			@opcache_invalidate( $file, true );
+		}
+
+		return array(
+			'success' => true,
+			'theme'   => $theme,
+			'path'    => 'wp-content/themes/' . $theme . '/' . $subdir . '/' . $slug . '.html',
+			'bytes'   => (int) $bytes,
+		);
+	}
+
+	/**
+	 * Which of these relative paths are missing on this site?
+	 *
+	 * @param array $rel_paths Relative paths (wp-content/...).
+	 * @return array{existing:array,missing:array}
+	 */
+	public static function stat_files( $rel_paths ) {
+		$existing = array();
+		$missing  = array();
+
+		foreach ( (array) $rel_paths as $rel ) {
+			$rel = ltrim( (string) $rel, '/' );
+			if ( '' === $rel ) {
+				continue;
+			}
+			$abs = self::get_absolute_path( $rel );
+			if ( $abs && file_exists( $abs ) ) {
+				$existing[] = $rel;
+			} else {
+				$missing[] = $rel;
+			}
+		}
+
+		return array( 'existing' => $existing, 'missing' => $missing );
 	}
 
 	/**
@@ -404,13 +510,33 @@ class VK7K_Sync_Files {
 		foreach ( $source_manifest as $rel_path => $info ) {
 			if ( ! isset( $dest_manifest[ $rel_path ] ) ) {
 				$files_to_send[] = $rel_path;
-			} else {
-				$dest_info = $dest_manifest[ $rel_path ];
-				if ( $info['size'] !== $dest_info['size'] ) {
-					$files_to_send[] = $rel_path;
-				} elseif ( ! empty( $info['hash'] ) && ! empty( $dest_info['hash'] ) && $info['hash'] !== $dest_info['hash'] ) {
+				continue;
+			}
+
+			$dest_info = $dest_manifest[ $rel_path ];
+
+			// Size difference always means "send it".
+			if ( $info['size'] !== $dest_info['size'] ) {
+				$files_to_send[] = $rel_path;
+				continue;
+			}
+
+			$src_hash  = isset( $info['hash'] ) ? (string) $info['hash'] : '';
+			$dest_hash = isset( $dest_info['hash'] ) ? (string) $dest_info['hash'] : '';
+
+			if ( '' !== $src_hash && '' !== $dest_hash ) {
+				// Same size but different content (e.g. wp media regenerate) IS a change.
+				if ( $src_hash !== $dest_hash ) {
 					$files_to_send[] = $rel_path;
 				}
+				continue;
+			}
+
+			// No hash available (large file on one side): fall back to mtime.
+			$src_mtime  = isset( $info['mtime'] ) ? (int) $info['mtime'] : 0;
+			$dest_mtime = isset( $dest_info['mtime'] ) ? (int) $dest_info['mtime'] : 0;
+			if ( $src_mtime > $dest_mtime + 1 ) {
+				$files_to_send[] = $rel_path;
 			}
 		}
 
