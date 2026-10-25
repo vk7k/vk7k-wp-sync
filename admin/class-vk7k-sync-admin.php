@@ -178,6 +178,9 @@ class VK7K_Sync_Admin {
 
 		$active_target = VK7K_Sync_Auth::get_active_target();
 		$settings      = VK7K_Sync_Auth::get_settings();
+		// `role` se publica en el localize de este método; sin definirlo aquí el editor de
+		// bloques (FSE) escupía "Undefined variable $current_role" en cada carga de página.
+		$current_role  = ! empty( $settings['role'] ) ? $settings['role'] : 'master';
 		$remote_url    = ! empty( $active_target['remote_url'] ) ? $active_target['remote_url'] : ( ! empty( $active_target['url'] ) ? $active_target['url'] : ( $settings['remote_url'] ?? '' ) );
 		$target_name   = ! empty( $active_target['name'] ) ? $active_target['name'] : ( ! empty( $remote_url ) ? wp_parse_url( $remote_url, PHP_URL_HOST ) : '' );
 

@@ -15,7 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // Define plugin constants
-define( 'VK7K_SYNC_VERSION', '1.9.1' );
+define( 'VK7K_SYNC_VERSION', '1.9.2' );
 define( 'VK7K_SYNC_FILE', __FILE__ );
 define( 'VK7K_SYNC_PATH', plugin_dir_path( __FILE__ ) );
 define( 'VK7K_SYNC_URL', plugin_dir_url( __FILE__ ) );
