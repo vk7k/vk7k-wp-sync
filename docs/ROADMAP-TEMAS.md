@@ -43,6 +43,18 @@ disco: templates 5 · parts 4 · patterns 9 · theme.json sí
 O sea: cinco plantillas en disco y tres filas en BD — **la mezcla exacta** que hace que un push
 parcial produzca un remoto distinto al local.
 
+Y el sitio es, concretamente, un **tema hijo de Twenty Twenty-Five**:
+
+```
+stylesheet = fusem-2026        (hijo, autor del sitio; style.css sin Version)
+template   = twentytwentyfive   (padre, vendor, se actualiza con WordPress)
+CBT 2.10.2 activo · patrones: 9 archivos PHP en el hijo · wp_block en BD: 0
+```
+
+O sea que el «estado del tema» mezcla **tres dueños distintos**: el padre (vendor), el hijo
+(código del sitio) y la BD (lo que se edita en el Site Editor). Tratarlos como uno solo es lo
+que rompe el push.
+
 ## 3. Brechas (la lista)
 
 | ID | Brecha |
@@ -70,12 +82,12 @@ homónimo del tema (si existe), las partes que referencia, y avisar si `wp_globa
 `wp_navigation` están desactualizados.
 *Aceptación:* editar `home`, push → el remoto sirve el mismo HTML (hash de fila + hash de archivo).
 
-**F2 — Coherencia archivo ↔ fila (la decisión de fondo).**
-Declarar la fuente de verdad y hacerla explícita en el push: si manda la BD, se empuja la fila y
-se actualiza el archivo; si manda el archivo (CBT), se empuja el archivo y se **elimina/invalida
-la fila remota**. Nunca las dos contradictorias.
-*Aceptación:* tras el push, `wp_template` remoto y `templates/*.html` remoto coinciden (o sólo
-existe uno de los dos, por diseño).
+**F2 — Coherencia archivo ↔ fila por manifiesto (la pieza de fondo).**
+Escribir el manifiesto de consolidación (slug → hash) y usarlo para clasificar cada activo: código,
+proyección u overlay. El push actúa según §5 y deja archivo y fila coherentes, sin ambigüedad.
+*Aceptación:* (a) editar en el Site Editor y empujar → manda la fila, el archivo se re-materializa;
+(b) editar el `*.html` a mano y empujar → manda el archivo y la fila se actualiza; (c) en ambos
+casos el remoto queda igual al local en las 7 capas.
 
 **F3 — `push-theme` atómico.**
 Un comando único: archivos + bundle FSE + `theme_mods` + fuentes, en el orden correcto
@@ -93,21 +105,67 @@ Detectar exportaciones pendientes («el tema en disco está más nuevo que la BD
 «exportar todo el tema» antes del push (G4).
 *Aceptación:* editar, guardar en el theme y empujar funciona en un solo gesto.
 
-## 5. Preguntas abiertas (necesito tu decisión para F2/F3)
+## 5. Modelo de capas (corregido tras la revisión)
 
-1. **¿Cuál es la fuente de verdad: archivo (CBT) o BD (Site Editor)?** Hoy gana el que exista, y
-   eso es la raíz del problema. Mi recomendación: **archivo**, con la BD como caché que se limpia
-   al empujar — es lo único que sobrevive a clones, migraciones y control de versiones.
-2. Cuando manda el archivo, ¿el push **borra** la fila remota o la reescribe con el contenido del
-   archivo? (borrar es más limpio; reescribir evita huecos si algo falla)
-3. ¿Push parcial por plantilla o siempre **tema completo**? Lo segundo es más seguro; lo primero,
-   más rápido en un ajuste chico.
-4. Los **patrones** (`patterns/*.php`) viajan con el tema, ¿o se gestionan aparte porque los edita
-   el cliente?
-5. `wp_global_styles` del remoto: ¿se pisan siempre, o se respeta lo que tenga el sitio?
-6. Rollback: ¿snapshot por push (archivos + filas) o confiar en el backup de BD?
+La pregunta «¿archivo o BD?» está mal planteada: **son dos tipos de activo con dueños distintos**.
+El error de partida es tener dos copias escribibles de lo mismo sin decir cuál manda.
 
-## 6. Notas técnicas para cuando se implemente
+| Capa | Qué contiene | Dueño | Autoridad |
+|---|---|---|---|
+| **0. Padre** (`twentytwentyfive` u otro vendor) | plantillas y partes base, `theme.json` base | vendor | **No se toca.** Se instala/actualiza a propósito, se registra su versión |
+| **1. Hijo** (`fusem-2026`) | `patterns/*.php`, `templates/*.html` exportados por CBT, `parts/`, `theme.json`, CSS/JS/PHP propio, `assets/` | el sitio (git) | **Archivos mandan** para lo que es código |
+| **2. Overlay** (BD) | `wp_template`, `wp_template_part`, `wp_global_styles`, `wp_navigation`, `wp_block`, `theme_mods_<slug>` | el sitio, pero **vive en la BD** | **BD manda** para lo que se edita en el Site Editor |
+| **3. Proyección** | los `*.html` que CBT escribe a partir del overlay | generado | No es autoridad: es una **copia materializada** del overlay para que git lo vea |
+
+**Consecuencias prácticas:**
+
+- Con un tema de terceros que **no** consolida (sin CBT, o un tema que no lo soporta), la capa 2
+  es la única verdad del diseño: los `*.html` del vendor son la base y no se tocan. El push tiene
+  que llevar el overlay; si no, el remoto se queda sin los cambios.
+- Con CBT, consolidar **no cambia la autoridad**: produce capa 3. Sirve para versionar, no para
+  decidir. Y si el push confunde capa 1 con capa 3, pisa código hecho a mano.
+- Los **patrones** son el caso bisagra: los que están en `patterns/*.php` son capa 1 (código, los
+  escribe una persona); los que se crean desde el editor son `wp_block`, capa 2 (diseño). Un mismo
+  sitio puede tener los dos, y hay que sincronizarlos por separado.
+- **`theme_mods` y estilos globales** son capa 2 siempre, aunque el tema sea de terceros.
+
+### Regla de conflicto (determinista, sin «gana el que exista»)
+
+Para un slug que existe **en archivo y en fila a la vez**, decidir con un manifiesto que escribe la
+consolidación (`wp-content/themes/<hijo>/.vk7k-materialized.json`: slug → hash del archivo):
+
+| Situación | Quién manda |
+|---|---|
+| Archivo coincide con el hash del manifiesto | es proyección → **manda la fila**; el push actualiza la fila y re-materializa el archivo |
+| Archivo **no** coincide con el manifiesto (editado a mano o re-exportado) | **manda el archivo**; el push sube el archivo y actualiza la fila para que no la pise |
+| Sólo archivo | manda el archivo |
+| Sólo fila | manda la fila |
+
+Así no hay ambigüedad: el manifiesto distingue «esto lo generó CBT» de «esto lo escribió una
+persona», que es exactamente la información que hoy falta (G10).
+
+## 6. Brechas añadidas
+
+| ID | Brecha |
+|---|---|
+| **G10** | No existe forma de distinguir un archivo **proyectado** por CBT de un archivo **escrito a mano** → el push no puede decidir quién manda |
+| **G11** | No se registra la versión del **tema padre**; una actualización de TT5 puede dejar el overlay apuntando a partes que ya no existen, y nada avisa |
+| **G12** | Los patrones no se separan por origen: `patterns/*.php` (código) y `wp_block` (editor) van en paquetes distintos y hoy nadie los reconcilia |
+
+## 7. Preguntas abiertas
+
+1. ¿Adoptamos el manifiesto de consolidación (`.vk7k-materialized.json`) como la pieza que resuelve
+   el conflicto? Es lo que propongo en §5; sin él sólo queda «archivo gana» o «fila gana».
+2. Con CBT, ¿consolidar debe ser **paso obligatorio antes del push de un tema** (te obliga a
+   materializar) o **opcional** (el push funciona igual, consolidás cuando querés versionar)?
+3. ¿El push de tema incluye las filas `wp_block` (patrones creados desde el editor)? Son diseño y
+   viven en BD, pero un cliente puede haberlos hecho en producción y perderías los suyos.
+4. ¿Qué hacemos cuando cambia la versión del padre (`twentytwentyfive`) entre local y remoto?
+   ¿Bloquear el push, avisar, o seguir?
+5. ¿Push parcial por plantilla o siempre tema completo? (sigue abierta)
+6. Rollback: ¿snapshot de filas + archivos por push, o backup de BD? (sigue abierta)
+
+## 8. Notas técnicas para cuando se implemente
 
 - `wp_template.post_name` = slug del archivo (`home`, `page`…); la taxonomía `wp_theme` lleva el
   namespace del tema (`fusem-2026`). El archivo vive en `themes/<tema>/templates/<slug>.html`.
@@ -121,7 +179,7 @@ Detectar exportaciones pendientes («el tema en disco está más nuevo que la BD
 - CBT escribe `templates/`, `parts/`, `patterns/`, `styles/`, `theme.json` y, según la opción
   elegida, borra las filas de BD para que el tema mande. Esa opción es la que define F2.
 
-## 7. Cómo verificar a mano hoy (mientras no exista `theme-state`)
+## 9. Cómo verificar a mano hoy (mientras no exista `theme-state`)
 
 ```bash
 cd /c/laragon/www/sillasenmovimiento
