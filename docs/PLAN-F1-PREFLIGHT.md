@@ -8,6 +8,18 @@
 
 ---
 
+## 0-bis. Principio: el push de tema es **unidireccional**
+
+El flujo de tema sólo va **local → remoto**. Dentro del push **no hay ninguna acción de traer**,
+ni completa ni parcial: si el remoto tiene trabajo que importa, se detiene el push y se hace un
+**pull completo con wp-sync** (que sobrescribe el local), y recién después se vuelve a empujar.
+Así el flujo queda ordenado y no hay dos verdades circulando a la vez.
+
+Consecuencia en el diseño: ningún chequeo ofrece «traer» como remedio. Como mucho, el mensaje
+**dice** que corresponde hacerlo, fuera de este flujo.
+
+---
+
 ## 0. Qué hace y qué no hace F1
 
 | Hace | No hace |
@@ -93,16 +105,17 @@ que elegir explícitamente; `pass` = sigue sin fricción.
 | **P1c** | El tema **no existe** en remoto | **block** | «`fusem-2026` no está instalado en remoto.» | **1.** Instalarlo desde local (ZIP del directorio) y activar · **2.** Instalarlo sin activar · **3.** Cancelar |
 | **P2** | Falta el **padre** (caso hijo) | **block** | «El hijo depende de `twentytwentyfive`, que no está en remoto.» | **1.** Instalar el padre, luego el hijo, luego activar (secuencia) · **2.** Cancelar |
 | **P3** | **Familia distinta** (bloque vs clásico) | **block duro, sin override** | «El remoto corre un tema clásico. El overlay FSE no existe allí y el clásico no existe acá: no hay nada portable.» | **1.** Cancelar (única). Enlace a la nota de migración a tema de bloques |
-| **P4** | Versión del padre distinta | **confirm** | «`twentytwentyfive` local 1.0 · remoto 1.1. Una actualización puede invalidar partes del overlay.» | **1.** Cancelar y actualizar el padre en local primero (recomendado) · **2.** Continuar igual (con snapshot previo) · **3.** Instalar en remoto la versión local del padre (degrada el remoto) |
-| **P5** | El remoto tiene **overlay propio** de ese tema | **confirm** | «El remoto tiene 12 filas de overlay que no existen acá y 3 que difieren (última: hoy 14:02).» | **1.** Traer primero el remoto (pull) · **2.** Sobrescribir el remoto (snapshot obligatorio) · **3.** Conservar el remoto y empujar sólo archivos · **4.** Cancelar |
+| **P4** | Versión del padre distinta | **block** | «`twentytwentyfive` local 1.0 · remoto 1.1. El overlay del local se escribió contra la 1.0; el remoto corre la 1.1.» + instrucción concreta | **1.** «¿Cómo lo arreglo?» → pasos: actualizar `twentytwentyfive` en local hasta la misma versión del remoto, verificar, reintentar · **2.** Cancelar. **No hay «continuar igual»** |
+| **P5** | El remoto tiene **overlay propio** de ese tema | **confirm** | «El remoto tiene 12 filas de overlay que no existen acá y 3 que difieren (última: hoy 14:02). Si ese trabajo importa, **detené el push**: corresponde un pull completo con wp-sync.» | **1.** Sobrescribir el remoto (snapshot obligatorio antes) · **2.** Cancelar. **No hay «traer» ni «conservar el remoto»**: conservar es un pull completo, fuera de este flujo |
 | **P6** | Portada estática con página inexistente en remoto | **confirm** | «`page_on_front` = 123 no existe en remoto: al activar, la portada quedaría vacía.» | **1.** Crear la página y asignarla · **2.** Activar sin portada · **3.** Cancelar |
 
 **Regla de oro del bloqueo:** todo `block` muestra **qué hacer**, no sólo «error». Y nunca hay un
 botón que salte el chequeo: para P1/P2/P3 la única salida es resolver o cancelar.
 
-**P5 con matiz de fechas:** si el overlay remoto es **más nuevo** que el local, la opción
-recomendada por defecto es **traer (pull)**, no empujar. Empujar ahí destruye trabajo hecho en
-producción.
+**P5 no compara fechas.** Con el flujo unidireccional, «quién es más nuevo» deja de ser una
+decisión del plugin: si el remoto tiene overlay propio, el push **para** y avisa que el camino
+correcto es un pull completo. Comparar relojes entre local y remoto era una invitación a perder
+trabajo hecho en producción.
 
 ---
 
@@ -113,9 +126,11 @@ producción.
 ```
 
 1. Preflight (§1.3). `block` corta aquí.
-2. Confirmaciones: cada `confirm` elegido queda registrado (quién, qué, cuándo).
+2. Confirmaciones: cada `confirm` elegido queda registrado (quién, qué, cuándo). Hoy el único
+   `confirm` del preflight es P5 (sobrescribir overlay ajeno).
 3. **Snapshot** del remoto antes de escribir: overlay + `theme_mods` + tema activo (JSON en
-   `/home/<user>/backups/`, con fecha). Sin snapshot no se ejecuta un `confirm` que sobrescriba.
+   `/home/<user>/backups/`, con fecha). Sin snapshot no se ejecuta ningún `confirm`. Es un
+   respaldo de una sola operación, no un historial: se conserva el último y se purga el resto.
 4. Archivos del tema (padre, luego hijo) **sin activar**.
 5. Overlay (filas FSE del namespace correcto + `theme_mods` + `custom_css`).
 6. Activar.
@@ -156,7 +171,7 @@ Banco de pruebas: **sitio local desechable** `qa-remote.test` (WordPress limpio 
 | P1c | borrar el tema hijo en `qa-remote` |
 | P3 | en `qa-remote` activar un tema clásico (Storefront o TT1) |
 | P4 | editar `Version:` en el `style.css` del padre en `qa-remote` |
-| P5 | crear 2 filas `wp_template` propias en `qa-remote` |
+| P5 | crear 2 filas `wp_template` propias en `qa-remote` (el preflight debe ofrecer **sólo** sobrescribir o cancelar, nunca traer) |
 | P6 | poner `page_on_front` a un ID inexistente |
 
 Aceptación de F1: **los seis escenarios dan el mensaje y las acciones de §2, y ninguno deja un
@@ -172,7 +187,7 @@ push que "parezca exitoso" sin efecto real.**
 | El preflight se salta llamando al AJAX directamente | el comparador se ejecuta **dentro** del handler, no en la UI |
 | Snapshot falla o no hay espacio | abortar antes de escribir (recordar el incidente de disco) |
 | `page_on_front` apunta a una página que sí existe pero tiene otro slug | comparar por ID y avisar del cambio de slug |
-| El usuario elige «continuar» en P4 y algo se rompe | snapshot + rollback documentado; el reporte dice cómo volver |
+| El usuario necesita avanzar y P4 lo bloquea | el mensaje da los pasos exactos para alinear el padre en local; no hay atajo que degrade el remoto |
 | Deploy del endpoint a un remoto sin actualizar el plugin | se despliega con `push_plugin` a los tres remotos y se verifica versión antes de usar F1 |
 
 ---
