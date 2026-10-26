@@ -82,12 +82,12 @@ homónimo del tema (si existe), las partes que referencia, y avisar si `wp_globa
 `wp_navigation` están desactualizados.
 *Aceptación:* editar `home`, push → el remoto sirve el mismo HTML (hash de fila + hash de archivo).
 
-**F2 — Coherencia archivo ↔ fila por manifiesto (la pieza de fondo).**
-Escribir el manifiesto de consolidación (slug → hash) y usarlo para clasificar cada activo: código,
-proyección u overlay. El push actúa según §5 y deja archivo y fila coherentes, sin ambigüedad.
-*Aceptación:* (a) editar en el Site Editor y empujar → manda la fila, el archivo se re-materializa;
-(b) editar el `*.html` a mano y empujar → manda el archivo y la fila se actualiza; (c) en ambos
-casos el remoto queda igual al local en las 7 capas.
+**F2 — Autoridad por contenido y fecha (sin archivo de estado).**
+Clasificar cada slug con la regla de §6 y aplicar la acción correspondiente, incluyendo resolver
+las referencias (`wp:pattern`, `core/template-part`) antes de empujar.
+*Aceptación:* (a) consolidar con CBT y empujar → el remoto queda con el archivo y sus referencias;
+(b) editar en el Site Editor y empujar → queda la fila; (c) ambos casos dejan el remoto igual al
+local sin intervención manual y sin archivos de estado.
 
 **F3 — `push-theme` atómico.**
 Un comando único: archivos + bundle FSE + `theme_mods` + fuentes, en el orden correcto
@@ -105,57 +105,80 @@ Detectar exportaciones pendientes («el tema en disco está más nuevo que la BD
 «exportar todo el tema» antes del push (G4).
 *Aceptación:* editar, guardar en el theme y empujar funciona en un solo gesto.
 
-## 5. Modelo de capas (corregido tras la revisión)
+## 5. Cómo funciona CBT de verdad (medido en este sitio)
 
-La pregunta «¿archivo o BD?» está mal planteada: **son dos tipos de activo con dueños distintos**.
-El error de partida es tener dos copias escribibles de lo mismo sin decir cuál manda.
+Create Block Theme **no** crea una copia pasiva: al pulsar «Guardar cambios en el theme» hace,
+en este orden:
 
-| Capa | Qué contiene | Dueño | Autoridad |
-|---|---|---|---|
-| **0. Padre** (`twentytwentyfive` u otro vendor) | plantillas y partes base, `theme.json` base | vendor | **No se toca.** Se instala/actualiza a propósito, se registra su versión |
-| **1. Hijo** (`fusem-2026`) | `patterns/*.php`, `templates/*.html` exportados por CBT, `parts/`, `theme.json`, CSS/JS/PHP propio, `assets/` | el sitio (git) | **Archivos mandan** para lo que es código |
-| **2. Overlay** (BD) | `wp_template`, `wp_template_part`, `wp_global_styles`, `wp_navigation`, `wp_block`, `theme_mods_<slug>` | el sitio, pero **vive en la BD** | **BD manda** para lo que se edita en el Site Editor |
-| **3. Proyección** | los `*.html` que CBT escribe a partir del overlay | generado | No es autoridad: es una **copia materializada** del overlay para que git lo vea |
+1. Recorre las entidades FSE del **tema activo** (`wp_template`, `wp_template_part`,
+   `wp_global_styles`; fuentes si se piden) filtrando por el namespace `wp_theme`.
+2. Escribe cada una como archivo dentro del **stylesheet** (el hijo):
+   `templates/<slug>.html`, `parts/<slug>.html`, y estilos en `theme.json` / `styles/*.json`.
+3. **Borra las filas de la BD** de ese tema para que el archivo pase a mandar.
 
-**Consecuencias prácticas:**
+Es manual (un botón) y de una sola dirección (BD → archivos). No exporta `wp_block` y no
+reescribe `patterns/*.php` (eso es código escrito a mano).
 
-- Con un tema de terceros que **no** consolida (sin CBT, o un tema que no lo soporta), la capa 2
-  es la única verdad del diseño: los `*.html` del vendor son la base y no se tocan. El push tiene
-  que llevar el overlay; si no, el remoto se queda sin los cambios.
-- Con CBT, consolidar **no cambia la autoridad**: produce capa 3. Sirve para versionar, no para
-  decidir. Y si el push confunde capa 1 con capa 3, pisa código hecho a mano.
-- Los **patrones** son el caso bisagra: los que están en `patterns/*.php` son capa 1 (código, los
-  escribe una persona); los que se crean desde el editor son `wp_block`, capa 2 (diseño). Un mismo
-  sitio puede tener los dos, y hay que sincronizarlos por separado.
-- **`theme_mods` y estilos globales** son capa 2 siempre, aunque el tema sea de terceros.
+### Lo que hay realmente en `sillasenmovimiento.test`
 
-### Regla de conflicto (determinista, sin «gana el que exista»)
+```
+#7   wp_template      front-page      tema=twentytwentyfive   mod 2026-10-25 21:56
+#28  wp_template      page            tema=twentytwentyfive   mod 2026-10-25 21:56
+#243 wp_template      single          tema=twentytwentyfive   mod 2026-10-25 21:56
+#439 wp_template_part ambitos         tema=twentytwentyfive
+#284 wp_template_part cabecera-fusem  tema=twentytwentyfive
+#434 wp_template_part campus          tema=twentytwentyfive
+#242 wp_template_part header          tema=twentytwentyfive
 
-Para un slug que existe **en archivo y en fila a la vez**, decidir con un manifiesto que escribe la
-consolidación (`wp-content/themes/<hijo>/.vk7k-materialized.json`: slug → hash del archivo):
+términos wp_theme: fusem-2026 (1) · twentytwentyfive (8)
+home: NINGUNA fila en BD — sólo templates/home.html
+templates/*.html escritos hoy 21:49–21:58 (la consolidación del usuario)
+```
 
-| Situación | Quién manda |
-|---|---|
-| Archivo coincide con el hash del manifiesto | es proyección → **manda la fila**; el push actualiza la fila y re-materializa el archivo |
-| Archivo **no** coincide con el manifiesto (editado a mano o re-exportado) | **manda el archivo**; el push sube el archivo y actualiza la fila para que no la pise |
-| Sólo archivo | manda el archivo |
-| Sólo fila | manda la fila |
+**Tres consecuencias que cambian el diseño:**
 
-Así no hay ambigüedad: el manifiesto distingue «esto lo generó CBT» de «esto lo escribió una
-persona», que es exactamente la información que hoy falta (G10).
+- **El bug tiene causa exacta**: `home` se consolidó y su fila desapareció, así que el botón del
+  editor —que envía la fila— no tenía qué enviar. No es que «se exportara mal»: no había nada que
+  exportar.
+- **El overlay está namespaced por tema.** Las siete filas vivas pertenecen a
+  `twentytwentyfive`, no a `fusem-2026`. Al pasar a un tema hijo, el overlay viejo queda huérfano
+  (existe, pero ya no se usa). Un push que no discrimine por `wp_theme` empuja basura.
+- **Una plantilla puede ser sólo una referencia**: `templates/home.html` contiene
+  `<!-- wp:pattern {"slug":"fusem-2026/home"} /-->`. Empujar ese archivo sin su patrón no cambia
+  nada. Hay que resolver las referencias `core/pattern` y `core/template-part` antes de empujar.
 
-## 6. Brechas añadidas
+## 6. Regla de autoridad, sin archivo nuevo
+
+El manifiesto que propuse en la versión anterior **sobra**: el estado ya se describe a sí mismo con
+contenido + fecha. Y un archivo de estado que se puede desincronizar es justo lo que hay que evitar.
+
+| Situación (mismo slug) | Quién manda | Qué hace el push |
+|---|---|---|
+| Sólo fila (no hay archivo) | **la fila** | empuja la fila y, si se puede, materializa el archivo |
+| Sólo archivo (fila borrada por CBT) | **el archivo** | empuja el archivo **y** las referencias que use (`wp:pattern`, `core/template-part`) |
+| Ambos, contenido idéntico | da igual | empuja la fila; no toca archivos |
+| Ambos, contenido distinto | el **más nuevo** por fecha | si gana el archivo → aviso explícito «adoptar archivo»; si gana la fila → sobrescribe el archivo |
+
+Regla mnemotécnica: **contenido primero, fecha después**. Nunca hace falta recordar en qué estado
+quedó cada slug, porque se puede recalcular en el momento.
+
+Y esto responde a la intuición original: **las personalizaciones viven en la BD y pisan el PHP del
+tema** — eso es lo normal y así debe seguir. El archivo sólo manda cuando la BD ya no tiene nada
+(consolidación), que es exactamente el caso de CBT.
+
+## 6-bis. Brechas añadidas
 
 | ID | Brecha |
 |---|---|
-| **G10** | No existe forma de distinguir un archivo **proyectado** por CBT de un archivo **escrito a mano** → el push no puede decidir quién manda |
-| **G11** | No se registra la versión del **tema padre**; una actualización de TT5 puede dejar el overlay apuntando a partes que ya no existen, y nada avisa |
-| **G12** | Los patrones no se separan por origen: `patterns/*.php` (código) y `wp_block` (editor) van en paquetes distintos y hoy nadie los reconcilia |
+| **G10** | No se detecta el estado «consolidado» (archivo sin fila): el push del editor no encuentra nada y no avisa |
+| **G11** | El push no discrimina por `wp_theme`: puede empujar el overlay de un tema que ya no está activo |
+| **G12** | No se resuelven las referencias de una plantilla (`core/pattern`, `core/template-part`): empujar el archivo sin sus piezas no cambia nada |
+| **G13** | No se registra la versión del tema padre; una actualización de TT5 puede dejar el overlay huérfano sin aviso |
 
 ## 7. Preguntas abiertas
 
-1. ¿Adoptamos el manifiesto de consolidación (`.vk7k-materialized.json`) como la pieza que resuelve
-   el conflicto? Es lo que propongo en §5; sin él sólo queda «archivo gana» o «fila gana».
+1. ~~¿Manifiesto de consolidación?~~ **Descartado**: se resuelve con contenido + fecha (§6). Si
+   más adelante aparece un caso que no se pueda decidir así, se revisa.
 2. Con CBT, ¿consolidar debe ser **paso obligatorio antes del push de un tema** (te obliga a
    materializar) o **opcional** (el push funciona igual, consolidás cuando querés versionar)?
 3. ¿El push de tema incluye las filas `wp_block` (patrones creados desde el editor)? Son diseño y
