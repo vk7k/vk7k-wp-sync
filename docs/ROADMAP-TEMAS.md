@@ -72,38 +72,31 @@ que rompe el push.
 ## 4. Fases propuestas
 
 **F0 — Diagnóstico (sin escribir nada).**
-`wp vk7k-sync theme-state [--remote] [--json]`: lista las 7 capas del local y del remoto con
-fecha/hash/slug. Sirve para responder «¿qué está desalineado?» antes de tocar.
-*Aceptación:* comparativa legible de local vs remoto para un tema dado.
+`wp vk7k-sync theme-state [--remote] [--json]`: las 7 capas del local y del remoto, por slug, con
+contenido/fecha. *Aceptación:* responde «¿qué está desalineado?» sin tocar nada.
 
-**F1 — El botón del editor, completo.**
-Al empujar desde FSE un `wp_template` o `wp_template_part`: adjuntar automáticamente el archivo
-homónimo del tema (si existe), las partes que referencia, y avisar si `wp_global_styles` o
-`wp_navigation` están desactualizados.
-*Aceptación:* editar `home`, push → el remoto sirve el mismo HTML (hash de fila + hash de archivo).
+**F1 — Preflight: contrato de identidad de tema (bloqueante).**
+Antes de cualquier push de tema, verificar y —si falta— resolver (§5-bis). Nada se envía si la
+identidad no coincide o si la familia no es transferible.
+*Aceptación:* push con remoto en otro tema → se bloquea con un mensaje que dice qué hacer; push con
+el mismo tema → pasa sin fricción.
 
-**F2 — Autoridad por contenido y fecha (sin archivo de estado).**
-Clasificar cada slug con la regla de §6 y aplicar la acción correspondiente, incluyendo resolver
-las referencias (`wp:pattern`, `core/template-part`) antes de empujar.
-*Aceptación:* (a) consolidar con CBT y empujar → el remoto queda con el archivo y sus referencias;
-(b) editar en el Site Editor y empujar → queda la fila; (c) ambos casos dejan el remoto igual al
-local sin intervención manual y sin archivos de estado.
+**F2 — Autoridad por contenido y fecha + referencias.**
+Clasificar cada slug con §6 y resolver `core/pattern` / `core/template-part` antes de empujar.
+*Aceptación:* (a) consolidado con CBT + push → el remoto queda con archivo y patrón; (b) editado en
+Site Editor + push → queda la fila; (c) nunca queda un remoto a medias.
 
 **F3 — `push-theme` atómico.**
-Un comando único: archivos + bundle FSE + `theme_mods` + fuentes, en el orden correcto
-(fila → archivo), con verificación final y snapshot para volver atrás.
-*Aceptación:* `wp vk7k-sync push-theme fusem-2026` deja el remoto byte a byte igual al local en
-las 7 capas, y lo reporta.
+Archivos + overlay + `theme_mods` + fuentes en el orden seguro de §5-bis, con verificación final y
+snapshot para revertir. *Aceptación:* el remoto iguala al local en todas las capas y lo reporta.
 
 **F4 — Dry-run y reporte.**
-Diff previo (archivos nuevos/modificados/borrados + filas + estilos), en JSON para la UI y en
-texto para CLI. Integrado al modal del editor antes de confirmar (G8).
-*Aceptación:* el push se puede previsualizar y el usuario ve exactamente qué cambia.
+Diff previo en JSON (archivos + filas + mods) para el modal del editor. *Aceptación:* se ve qué
+cambia antes de confirmar.
 
 **F5 — Integración con Create Block Theme.**
-Detectar exportaciones pendientes («el tema en disco está más nuevo que la BD») y ofrecer
-«exportar todo el tema» antes del push (G4).
-*Aceptación:* editar, guardar en el theme y empujar funciona en un solo gesto.
+Detectar exportación pendiente («el disco está más nuevo que la BD») y ofrecer consolidar antes del
+push. *Aceptación:* editar → consolidar → empujar, en un gesto.
 
 ## 5. Cómo funciona CBT de verdad (medido en este sitio)
 
@@ -175,18 +168,86 @@ tema** — eso es lo normal y así debe seguir. El archivo sólo manda cuando la
 | **G12** | No se resuelven las referencias de una plantilla (`core/pattern`, `core/template-part`): empujar el archivo sin sus piezas no cambia nada |
 | **G13** | No se registra la versión del tema padre; una actualización de TT5 puede dejar el overlay huérfano sin aviso |
 
+## 6-ter. Familias de overlay: no todas son lo mismo
+
+Respondiendo a la duda: **no**, el overlay de un tema de bloques no es el mismo mecanismo que las
+personalizaciones clásicas. Hay tres familias y un conjunto de cosas que no son «del tema»:
+
+| Familia | De dónde sale | Dónde vive | Se puede empujar como dato |
+|---|---|---|---|
+| **FSE (bloques)** | Site Editor | `wp_template`, `wp_template_part`, `wp_global_styles` (+postmeta `theme_json`), `wp_navigation` | **Sí**: registros estructurados, namespaced por `wp_theme` |
+| **Clásico (p. ej. Storefront)** | Personalizador | `theme_mods_<slug>` (options), `custom_css` (post), `sidebars_widgets` + `widget_*` | **Depende del código del tema**: son claves arbitrarias que interpreta su PHP |
+| **Constructor** (Elementor y similares) | el propio builder | postmeta + CSS en uploads + tablas propias | Modelo propio, ajeno a WP core |
+
+Y cosas que **no** son del tema aunque la gente las llame así: menús (`nav_menu`), páginas,
+`show_on_front` / `page_on_front`, y los medios. Son del **sitio** y viajan aparte.
+
+**Consecuencias:**
+
+- CBT sólo tiene sentido en la familia FSE: su trabajo es materializar esas filas en archivos. Con
+  Storefront (clásico) no aplica, porque no hay `templates/` que exportar.
+- El overlay de CBT **es** el overlay FSE, visto en otro soporte. No es un cuarto mecanismo.
+- Un `wp_template` empujado a un sitio que corre otro tema se guarda con el namespace equivocado:
+  **no se rompe nada, pero no hace nada** — el peor resultado posible, porque parece éxito.
+- Un `theme_mods_storefront` en un sitio con otro tema tampoco hace nada, y si el tema es la misma
+  familia pero **otra versión**, las claves pueden haber cambiado de significado.
+
+Por eso el push no puede ser «copiar la capa 2»: tiene que saber **de qué familia** es el tema
+(`wp_is_block_theme()`), qué claves son suyas y cuáles son del sitio.
+
+## 6-quater. Preflight obligatorio (lo que pediste)
+
+Contrato: **no se empuja un tema cuya identidad no coincide con la del remoto.**
+
+| # | Chequeo | Si falla |
+|---|---|---|
+| P1 | `stylesheet` local == remoto | ofrecer instalar el tema y activarlo (con confirmación explícita) |
+| P2 | `template` (padre) local == remoto, incluido el caso child | ídem: instalar el padre, luego el hijo |
+| P3 | Misma **familia** (bloque vs clásico) | **abortar**: el overlay no es transferible |
+| P4 | Versión del padre registrada == remoto | avisar y permitir abortar (una actualización puede invalidar el overlay) |
+| P5 | El remoto no tiene overlay propio para ese tema, o el usuario decide qué hacer | ofrecer **sobrescribir / conservar / abortar** (esto evita perder customizaciones hechas en producción) |
+| P6 | Si el tema usa portada estática, la página de `page_on_front` existe en remoto | avisar: activar sin ella deja la portada vacía |
+
+**Orden seguro de ejecución** (importa, y es contraintuitivo):
+
+```
+1. instalar/copiar archivos del tema (padre y hijo)      ← sin activar
+2. empujar el overlay (filas FSE + theme_mods + css)     ← aún sin activar
+3. activar el tema en remoto                             ← el sitio cambia ya con su overlay puesto
+4. verificar: front 200, tema activo, nº de plantillas
+5. si algo falla: restaurar tema anterior + snapshot
+```
+
+Activar **antes** de empujar el overlay deja el sitio unos segundos con el aspecto por defecto. Al
+revés, el cambio de tema ya aparece vestido.
+
+**Lo que ya existe y se reutiliza:** `/themes/list` (temas disponibles en remoto), `/themes/switch`
+(activa + aplica `theme_mods`, y devuelve `is_child`/`parent_theme`), `push_theme()` (sube
+archivos del tema). Falta la política: hoy `/themes/switch` falla si el tema no existe en remoto y
+nadie comprueba identidad ni familia.
+
+## 6-quinquies. Brechas del preflight
+
+| ID | Brecha |
+|---|---|
+| **G14** | No hay preflight: se puede empujar un tema sobre un sitio que corre otro, y el resultado es un éxito falso |
+| **G15** | No hay flujo de instalación de tema remoto (el switch exige que ya exista) |
+| **G16** | No se detecta la familia del tema ni se ajusta qué overlay corresponde |
+| **G17** | No hay política para el overlay que ya existe en el remoto (sobrescribir vs conservar) |
+| **G18** | No se verifica la portada estática (`page_on_front`) antes de activar |
+
 ## 7. Preguntas abiertas
 
-1. ~~¿Manifiesto de consolidación?~~ **Descartado**: se resuelve con contenido + fecha (§6). Si
-   más adelante aparece un caso que no se pueda decidir así, se revisa.
-2. Con CBT, ¿consolidar debe ser **paso obligatorio antes del push de un tema** (te obliga a
-   materializar) o **opcional** (el push funciona igual, consolidás cuando querés versionar)?
-3. ¿El push de tema incluye las filas `wp_block` (patrones creados desde el editor)? Son diseño y
-   viven en BD, pero un cliente puede haberlos hecho en producción y perderías los suyos.
-4. ¿Qué hacemos cuando cambia la versión del padre (`twentytwentyfive`) entre local y remoto?
-   ¿Bloquear el push, avisar, o seguir?
-5. ¿Push parcial por plantilla o siempre tema completo? (sigue abierta)
-6. Rollback: ¿snapshot de filas + archivos por push, o backup de BD? (sigue abierta)
+1. ~~¿Manifiesto de consolidación?~~ **Descartado**: se resuelve con contenido + fecha (§6).
+2. **¿El preflight es bloqueante duro o advertible?** Mi recomendación: duro para P3 (familia) y P1/P2
+   sin remedio; advertible con confirmación para P4/P5/P6.
+3. **Si el remoto ya tiene customizaciones de ese tema, ¿qué gana por defecto?** Mi recomendación:
+   preguntar siempre, sin default silencioso; y guardar snapshot del overlay remoto antes de pisar.
+4. Con CBT, ¿consolidar es paso obligatorio antes del push o el push funciona igual sin consolidar?
+5. ¿Push de tema completo o por plantilla? Mi recomendación: **completo**, porque las referencias
+   (`core/pattern`, `core/template-part`) hacen que una plantilla nunca esté sola.
+6. ¿Qué hacemos cuando cambia la versión del padre entre local y remoto: bloquear, avisar o seguir?
+7. Rollback: ¿snapshot de filas + archivos por push, o backup de BD?
 
 ## 8. Notas técnicas para cuando se implemente
 
