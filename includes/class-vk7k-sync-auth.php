@@ -422,8 +422,36 @@ class VK7K_Sync_Auth {
 	private static function set_unlocked_session( $derived_key ) {
 		$wp_salt   = defined( 'AUTH_KEY' ) ? AUTH_KEY : 'vk7k_vault_salt';
 		$token_enc = 'vk7k_sess:' . base64_encode( $derived_key ^ substr( hash( 'sha256', $wp_salt, true ), 0, 32 ) );
-		set_transient( self::get_unlock_transient_key(), $token_enc, 2 * HOUR_IN_SECONDS );
-		set_transient( self::UNLOCK_TRANSIENT_KEY, $token_enc, 2 * HOUR_IN_SECONDS );
+		$ttl       = self::get_unlock_ttl();
+		set_transient( self::get_unlock_transient_key(), $token_enc, $ttl );
+		set_transient( self::UNLOCK_TRANSIENT_KEY, $token_enc, $ttl );
+	}
+
+	/**
+	 * How long an unlocked vault stays unlocked.
+	 *
+	 * The HMAC signature needs the peer key decrypted on every push, so a short TTL
+	 * turns every expiry into a spurious "Firma HMAC inválida". Default is 30 days;
+	 * override with the `vk7k_sync_vault_unlock_ttl` filter (seconds) or the
+	 * VK7K_VAULT_UNLOCK_TTL constant.
+	 *
+	 * @return int Seconds.
+	 */
+	public static function get_unlock_ttl() {
+		if ( defined( 'VK7K_VAULT_UNLOCK_TTL' ) ) {
+			$ttl = (int) VK7K_VAULT_UNLOCK_TTL;
+		} else {
+			$ttl = 30 * DAY_IN_SECONDS;
+		}
+
+		/**
+		 * Filter the vault unlock lifetime, in seconds.
+		 *
+		 * @param int $ttl Seconds.
+		 */
+		$ttl = (int) apply_filters( 'vk7k_sync_vault_unlock_ttl', $ttl );
+
+		return $ttl > 0 ? $ttl : 30 * DAY_IN_SECONDS;
 	}
 
 	/**
